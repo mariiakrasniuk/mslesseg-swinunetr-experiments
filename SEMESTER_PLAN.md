@@ -78,6 +78,13 @@ Nothing below should be concluded from single-seed, soft-Dice numbers.
   - *Convention finding:* Haar matches PyWavelets exactly. Our db2/sym4 are valid orthogonal DWTs, but because `F.conv3d` is correlation they are the **time-reversed (mirrored)** wavelet, and with the current padding they are sampled at the other decimation phase (= PyWavelets on the input shifted by one voxel). The magnitude frequency response is identical, so the sub-band content is equivalent, but the thesis should describe it accurately. **Decision before retraining:** keep as is and document it, or switch to the PyWavelets convention. Switching changes the padding, which is not stored in checkpoints, so the old convention would need to stay available behind a flag so RP2 checkpoints can still be evaluated.
 - [ ] **Check the multi-level recursion.** In `WaveletPatchEmbedML`, the next level decomposes the **SE-rescaled** LLL (`approx = sub[:, :1]` after `se_blocks[i]`), so levels ≥2 are not a pure DWT of the input. Decide whether this is intended. A cleaner design applies SE *after* the full decomposition.
 - [ ] **Reconcile the training config** with the report. When the RP2 runs were made (commits up to April 2026), the code had `EPOCHS=70, PATIENCE=10`. RP2 states "up to 100 epochs". Every run stopped early (≤59 epochs), so the numbers are unaffected; only the report text needs correcting. Commit `13fde49` (June 2026) later raised this to `EPOCHS=150, PATIENCE=20`, so new runs are not directly comparable to RP2. Also note that checkpoints are selected on val Dice, while early stopping monitors val loss.
+- [x] **Retraining protocol decided (2026-09-29):**
+  - SE fixed: each level now decomposes the raw LLL. `legacy_se_recursion=True` reproduces RP2 exactly and is used only to evaluate RP2 checkpoints. For levels ≥ 2 the two versions produce 18–28% different embeddings.
+  - DWT convention kept (mirrored db2/sym4) and documented.
+  - Training config: 150 epochs, patience 20.
+  - Checkpoint selection: val Dice at threshold 0.5, computed correctly.
+  - Seeds: `--seed`; runs are saved as `checkpoints/best_<run>_s<seed>.pth`.
+  - Queue: [run_queue.sh](run_queue.sh), 5 configs × seeds 1–3, run sequentially and resumable.
 - [ ] **Re-run the key configurations with ≥3 seeds:** baseline, single-level Haar, db2 L2, sym4 L1/L3. If compute allows, use patient-level k-fold cross-validation over P1–P53 instead of a single val split. Report mean ± std and a paired test across test patients (e.g. Wilcoxon).
 
 **Deliverable:** a corrected RP2 table with error bars. It is the reference point for everything else.

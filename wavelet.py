@@ -326,9 +326,19 @@ class WaveletPatchEmbedML(nn.Module):
 
     def __init__(self, in_chans: int = 1, embed_dim: int = 48, levels: int = 5,
                  wavelet: str = "haar", coeff_aug: bool = False,
-                 noise_std: float = 0.05, scale_delta: float = 0.1):
+                 noise_std: float = 0.05, scale_delta: float = 0.1,
+                 legacy_se_recursion: bool = False):
+        """
+        legacy_se_recursion
+            False (default): each level decomposes the raw LLL of the previous
+            level; SE only reweights the bands that are stored — a true
+            multi-level DWT.
+            True: RP2 behaviour — the next level decomposes the SE-rescaled
+            LLL. Needed to evaluate RP2 checkpoints (levels >= 2) faithfully.
+        """
         super().__init__()
         self.levels = levels
+        self.legacy_se_recursion = legacy_se_recursion
         self.coeff_aug = coeff_aug
         self.noise_std = noise_std
         self.scale_delta = scale_delta
@@ -371,6 +381,7 @@ class WaveletPatchEmbedML(nn.Module):
                         detail_part = detail_part + noise
                     sub = torch.cat([approx_part, detail_part], dim=1)
 
+                raw_lll = sub[:, :1]          # LLL before SE
                 sub = self.se_blocks[i](sub)  # per-level SE recalibration
 
                 if target_size is None:
@@ -384,7 +395,8 @@ class WaveletPatchEmbedML(nn.Module):
                                       mode="trilinear", align_corners=False)
                     )
 
-                approx = sub[:, :1]   # LLL → input for next level
+                # LLL → input for next level
+                approx = sub[:, :1] if self.legacy_se_recursion else raw_lll
 
         x = torch.cat(all_bands, dim=1)   # [B, in_chans*8*actual_levels, D/2, H/2, W/2]
         return self.proj(x)

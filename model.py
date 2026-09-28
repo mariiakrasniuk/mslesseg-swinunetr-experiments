@@ -31,6 +31,7 @@ def build_model(
     levels: int = 1,
     use_v2: bool = False,
     coeff_aug: bool = False,
+    legacy_se_recursion: bool = False,
 ) -> nn.Module:
     """
     Factory that returns the model for a given variant name.
@@ -50,6 +51,8 @@ def build_model(
 
         Supported wavelet families : 'haar', 'db2', 'sym4'
         Supported levels           : 1, 2, 3
+        legacy_se_recursion=True reproduces RP2 (next level decomposes the
+        SE-rescaled LLL); needed only to evaluate RP2 checkpoints.
 
         Parameter count (embed_dim=48):
             levels=1 :  64  (SE)  + 432 (proj) =  496
@@ -72,6 +75,7 @@ def build_model(
         model.swinViT.patch_embed = WaveletPatchEmbedML(
             in_chans=in_channels, embed_dim=feature_size,
             levels=levels, wavelet=wavelet, coeff_aug=coeff_aug,
+            legacy_se_recursion=legacy_se_recursion,
         )
         return model
 

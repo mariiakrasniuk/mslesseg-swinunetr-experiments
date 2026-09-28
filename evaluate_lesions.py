@@ -26,6 +26,7 @@ import csv
 import glob
 import math
 import os
+import re
 
 import numpy as np
 import torch
@@ -42,8 +43,10 @@ from splits import VAL_PATIENTS
 from transforms import get_val_transforms
 
 # ------------------
-# Run registry — checkpoint file names as saved by train.py (plus aliases)
+# Run registry
 # ------------------
+# RP2 checkpoints (no seed suffix) were trained with the legacy multi-level
+# recursion; runs from the current train.py are named <run>_s<seed>.
 RUNS = {
     "baseline":  {"variant": "baseline",  "ckpt": ["best_baseline.pth"]},
     "wavelet_a": {"variant": "wavelet_a", "ckpt": ["best_wavelet_a_single_level.pth", "best_wavelet_a.pth"]},
@@ -53,7 +56,20 @@ for _w in ("haar", "db2", "sym4"):
         RUNS[f"wavelet_ml_{_w}_l{_l}"] = {
             "variant": "wavelet_ml", "wavelet": _w, "levels": _l,
             "ckpt": [f"best_wavelet_ml_{_w}_l{_l}.pth"],
+            "legacy_se_recursion": True,
         }
+RP2_RUNS = list(RUNS)
+
+
+def spec_from_name(run):
+    """Spec for a seeded run name, e.g. 'wavelet_ml_sym4_l1_s2' or 'baseline_s1'."""
+    m = re.fullmatch(r"(baseline|wavelet_a|wavelet_ml_(haar|db2|sym4)_l(\d))_s(\d+)", run)
+    if not m:
+        return None
+    if m.group(2):
+        return {"variant": "wavelet_ml", "wavelet": m.group(2), "levels": int(m.group(3)),
+                "ckpt": [f"best_{run}.pth"]}
+    return {"variant": m.group(1), "ckpt": [f"best_{run}.pth"]}
 
 # ------------------
 # Args
@@ -61,8 +77,11 @@ for _w in ("haar", "db2", "sym4"):
 parser = argparse.ArgumentParser()
 parser.add_argument("--ckpt_dir", type=str, required=True,
                     help="Folder with checkpoints (searched recursively)")
-parser.add_argument("--runs", nargs="+", default=list(RUNS),
-                    choices=list(RUNS), help="Runs to evaluate (default: all)")
+parser.add_argument("--runs", nargs="+", default=None,
+                    help="Runs to evaluate: RP2 names (default: all RP2 runs) "
+                         "or seeded names like wavelet_ml_sym4_l1_s1")
+parser.add_argument("--discover", action="store_true",
+                    help="Evaluate every best_<run>_s<seed>.pth found in --ckpt_dir")
 parser.add_argument("--split", type=str, default="test", choices=["test", "val"])
 parser.add_argument("--threshold", type=float, default=0.5)
 parser.add_argument("--min_lesion_size", type=int, default=3,
@@ -88,6 +107,20 @@ BINS = [("small", 0.0, BIN_EDGES[0]), ("medium", BIN_EDGES[0], BIN_EDGES[1]),
         ("large", BIN_EDGES[1], math.inf)]
 
 os.makedirs(OUT_DIR, exist_ok=True)
+
+if args.discover:
+    found = glob.glob(os.path.join(args.ckpt_dir, "**", "best_*_s*.pth"), recursive=True)
+    names = sorted({os.path.basename(p)[len("best_"):-len(".pth")] for p in found})
+    args.runs = [n for n in names if spec_from_name(n)]
+elif args.runs is None:
+    args.runs = RP2_RUNS
+for run in args.runs:
+    if run not in RUNS:
+        spec = spec_from_name(run)
+        if spec is None:
+            parser.error(f"unknown run name '{run}'")
+        RUNS[run] = spec
+print(f"Runs: {args.runs}")
 
 
 def find_checkpoint(names):
@@ -151,7 +184,8 @@ for run in args.runs:
 
     model = build_model(spec["variant"], in_channels=1,
                         wavelet=spec.get("wavelet", "haar"),
-                        levels=spec.get("levels", 1)).to(args.device)
+                        levels=spec.get("levels", 1),
+                        legacy_se_recursion=spec.get("legacy_se_recursion", False)).to(args.device)
     state = torch.load(ckpt, map_location=args.device, weights_only=True)
     try:
         model.load_state_dict(state)
