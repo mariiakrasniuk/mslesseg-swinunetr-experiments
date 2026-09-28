@@ -60,10 +60,13 @@ def best_shift_error(ours, ref):
     return best
 
 
-def compare_to_pywt(bands, wavelet, reverse):
+def compare_to_pywt(bands, wavelet, reverse, phase=0):
     """Max relative error over the 8 sub-bands vs pywt.dwtn (optionally with
-    time-reversed filters, implemented as flip -> dwtn -> flip)."""
-    xin = x[::-1, ::-1, ::-1].copy() if reverse else x
+    time-reversed filters, implemented as flip -> dwtn -> flip). `phase`
+    shifts the input by that many voxels along every axis first, which
+    changes which samples the stride-2 decimation keeps."""
+    xin = np.roll(x, phase, axis=(0, 1, 2))
+    xin = xin[::-1, ::-1, ::-1].copy() if reverse else xin
     ref = pywt.dwtn(xin, wavelet, mode="zero")
     worst, details = 0.0, []
     for i, key in enumerate(PYWT_KEYS):
@@ -105,22 +108,28 @@ for name in ("haar", "db2", "sym4"):
 
     # 3. equivalence with pywt.dwtn
     bands = y[0].numpy()
-    fwd_err, fwd_det = compare_to_pywt(bands, name, reverse=False)
-    rev_err, rev_det = compare_to_pywt(bands, name, reverse=True)
-    print(f"  vs pywt.dwtn, true filters     : max rel err {fwd_err:.2e}")
-    print(f"  vs pywt.dwtn, reversed filters : max rel err {rev_err:.2e}")
-    best_err, best_det, verdict = ((fwd_err, fwd_det, f"standard {name}") if fwd_err <= rev_err
-                                   else (rev_err, rev_det, f"time-reversed (mirrored) {name}"))
+    results = []
+    for reverse in (False, True):
+        for phase in (0, 1, -1):
+            err, det = compare_to_pywt(bands, name, reverse, phase)
+            results.append((err, det, reverse, phase))
+            print(f"  vs pywt.dwtn, {'reversed' if reverse else 'true'} filters, "
+                  f"input phase {phase:+d} : max rel err {err:.2e}")
+    best_err, best_det, reverse, phase = min(results, key=lambda r: r[0])
     if best_err < TOL:
         shifts = sorted({d[2] for d in best_det})
         flips = [d[0] for d in best_det if d[3] == -1]
-        print(f"  => DWT3d computes the {verdict} DWT; sub-band order matches pywt keys "
-              f"{PYWT_KEYS[0]}..{PYWT_KEYS[-1]}; coefficient shift(s) {shifts}"
+        kind = f"time-reversed (mirrored) {name}" if reverse else f"standard {name}"
+        print(f"  => DWT3d computes the {kind} DWT"
+              + ("" if phase == 0 else f", sampled at the other decimation phase "
+                                        f"(= pywt on the input shifted by {phase:+d} voxel)")
+              + f"; sub-band order matches pywt keys {PYWT_KEYS[0]}..{PYWT_KEYS[-1]}; "
+              f"coefficient shift(s) {shifts}"
               + (f"; sign flipped in {flips}" if flips else ""))
     else:
         all_ok = False
-        print("  => DWT3d does NOT match pywt in either orientation. Per band (true filters):")
-        for band, err, shift, sign in fwd_det:
+        print("  => DWT3d does NOT match pywt in any orientation / phase. Per band (true filters, phase 0):")
+        for band, err, shift, sign in results[0][1]:
             print(f"       {band}: rel err {err:.2e} (shift {shift}, sign {sign})")
     all_ok &= orth_ok
 
