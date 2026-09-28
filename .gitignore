@@ -2,3 +2,5 @@ MSLesSeg Dataset/
 __pycache__/
 best_swinunetr.pth
 *.pth
+results/**/probs/
+logs/

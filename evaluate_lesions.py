@@ -67,14 +67,14 @@ parser.add_argument("--split", type=str, default="test", choices=["test", "val"]
 parser.add_argument("--threshold", type=float, default=0.5)
 parser.add_argument("--min_lesion_size", type=int, default=3,
                     help="Components smaller than this (voxels) are ignored in lesion metrics")
-parser.add_argument("--size_bins", type=str, default="50,500",
+parser.add_argument("--size_bins", type=str, default="40,115",
                     help="Lesion volume bin edges in mm^3: small < a <= medium < b <= large")
 parser.add_argument("--limit", type=int, default=None,
                     help="Evaluate only the first N cases (smoke test)")
 parser.add_argument("--device", type=str, default="cuda")
 parser.add_argument("--out_dir", type=str, default=None)
 parser.add_argument("--save_probs", action="store_true",
-                    help="Save float16 probability maps (npz) for later threshold sweeps")
+                    help="Save float16 probability maps (npz) for threshold_sweep.py")
 args = parser.parse_args()
 
 ROOT          = "MSLesSeg_Dataset"
@@ -195,8 +195,11 @@ for run in args.runs:
             if args.save_probs:
                 p_dir = os.path.join(OUT_DIR, "probs", run)
                 os.makedirs(p_dir, exist_ok=True)
-                np.savez_compressed(os.path.join(p_dir, f"{case}.npz"),
-                                    prob=prob.astype(np.float16), gt=gt)
+                # Probabilities < 0.01 are zeroed so the file compresses well;
+                # threshold_sweep.py never uses thresholds below that.
+                prob16 = prob.astype(np.float16)
+                prob16[prob < 0.01] = 0
+                np.savez_compressed(os.path.join(p_dir, f"{case}.npz"), prob=prob16, gt=gt)
 
     # ---- per-run summary ----
     def mean(key):
