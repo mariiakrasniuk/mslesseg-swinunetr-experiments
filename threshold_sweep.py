@@ -39,7 +39,7 @@ parser.add_argument("--split", type=str, default="test", choices=["test", "val"]
 parser.add_argument("--probs_dir", type=str, default=None,
                     help="Default: results/eval_<split>/probs")
 parser.add_argument("--thresholds", type=str, default=None,
-                    help="Comma-separated; default 0.05..0.95 step 0.05")
+                    help="Comma-separated; default 0.05..0.95 step 0.05 plus 0.97..0.999")
 parser.add_argument("--min_lesion_size", type=int, default=3)
 parser.add_argument("--size_bins", type=str, default="40,115",
                     help="Lesion volume bin edges in mm^3: small < a <= medium < b <= large")
@@ -52,8 +52,11 @@ args = parser.parse_args()
 
 PROBS_DIR = args.probs_dir or os.path.join("results", f"eval_{args.split}", "probs")
 OUT_DIR   = os.path.join(os.path.dirname(PROBS_DIR.rstrip("/\\")), "sweep")
+# Models trained with Dice loss are very confident, so the useful operating
+# points sit close to 1. float16 maps resolve up to ~0.9995.
 THRESHOLDS = ([float(t) for t in args.thresholds.split(",")] if args.thresholds
-              else [round(t, 2) for t in np.arange(0.05, 0.951, 0.05)])
+              else [round(t, 2) for t in np.arange(0.05, 0.951, 0.05)]
+                   + [0.97, 0.98, 0.99, 0.995, 0.998, 0.999])
 EDGES     = [float(v) for v in args.size_bins.split(",")]
 BIN_NAMES = ["small", "medium", "large"]
 FP_LEVELS = [float(v) for v in args.fp_levels.split(",")]
