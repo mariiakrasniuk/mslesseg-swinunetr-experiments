@@ -97,6 +97,8 @@ BEST_MODEL_PATH    = os.path.join(OUT_DIR, f"best_{RUN_NAME}.pth")
 HISTORY_PATH       = os.path.join(OUT_DIR, f"training_history_{RUN_NAME}.pth")
 LOSS_CURVE_PATH    = os.path.join(OUT_DIR, f"loss_curves_{RUN_NAME}.png")
 DICE_CURVE_PATH    = os.path.join(OUT_DIR, f"dice_curves_{RUN_NAME}.png")
+# Resume point, rewritten after every epoch and deleted when the run finishes
+RESUME_PATH        = os.path.join(OUT_DIR, f"resume_{RUN_NAME}.pth")
 
 # The history file is written only when a run finishes, so it marks a
 # completed run — lets an interrupted training queue be restarted safely.
@@ -158,9 +160,27 @@ train_dice_history = []
 val_dice_history = []
 
 # ------------------
+# Resume an interrupted run
+# ------------------
+start_epoch = 1
+if os.path.exists(RESUME_PATH) and not args.smoke:
+    ckpt = torch.load(RESUME_PATH, map_location=DEVICE, weights_only=False)
+    model.load_state_dict(ckpt["model"])
+    optimizer.load_state_dict(ckpt["optimizer"])
+    best_dice, best_epoch = ckpt["best_dice"], ckpt["best_epoch"]
+    best_val_loss, early_stop_counter = ckpt["best_val_loss"], ckpt["early_stop_counter"]
+    train_loss_history, val_loss_history = ckpt["train_loss"], ckpt["val_loss"]
+    train_dice_history, val_dice_history = ckpt["train_dice"], ckpt["val_dice"]
+    start_epoch = ckpt["epoch"] + 1
+    # Fresh (but seed-determined) augmentation stream for the remaining epochs
+    train_loader.dataset.transform.set_random_state(seed=args.seed * 1000 + start_epoch)
+    print(f"[{RUN_NAME}] resuming from epoch {start_epoch} "
+          f"(best val Dice so far {best_dice:.4f} at epoch {best_epoch})")
+
+# ------------------
 # Training loop
 # ------------------
-for epoch in range(1, EPOCHS + 1):
+for epoch in range(start_epoch, EPOCHS + 1):
     epoch_start = time.time()
 
     # ========= TRAIN =========
@@ -275,6 +295,17 @@ for epoch in range(1, EPOCHS + 1):
         early_stop_counter += 1
         print(f"EarlyStopping {early_stop_counter}/{PATIENCE}")
 
+    # ========= RESUME POINT =========
+    if not args.smoke:
+        torch.save({
+            "epoch": epoch, "model": model.state_dict(), "optimizer": optimizer.state_dict(),
+            "best_dice": best_dice, "best_epoch": best_epoch,
+            "best_val_loss": best_val_loss, "early_stop_counter": early_stop_counter,
+            "train_loss": train_loss_history, "val_loss": val_loss_history,
+            "train_dice": train_dice_history, "val_dice": val_dice_history,
+        }, RESUME_PATH + ".tmp")
+        os.replace(RESUME_PATH + ".tmp", RESUME_PATH)   # atomic: never a half-written file
+
     if early_stop_counter >= PATIENCE:
         print("Early stopping triggered")
         break
@@ -326,6 +357,8 @@ plt.tight_layout()
 plt.savefig(DICE_CURVE_PATH, dpi=300)
 plt.close()
 
+if os.path.exists(RESUME_PATH):
+    os.remove(RESUME_PATH)
 print(f"[{RUN_NAME}] best val Dice {best_dice:.4f} at epoch {best_epoch} "
       f"of {len(val_dice_history)}")
 print(f"Training history saved to {HISTORY_PATH}")
