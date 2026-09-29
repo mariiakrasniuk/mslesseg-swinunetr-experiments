@@ -1,4 +1,5 @@
 import argparse
+import atexit
 import os
 import sys
 import time
@@ -104,6 +105,46 @@ RESUME_PATH        = os.path.join(OUT_DIR, f"resume_{RUN_NAME}.pth")
 # completed run — lets an interrupted training queue be restarted safely.
 if os.path.exists(HISTORY_PATH) and not args.smoke:
     print(f"[{RUN_NAME}] already finished ({HISTORY_PATH} exists) — skipping")
+    sys.exit(0)
+
+
+# Lock so that several queue workers (one per GPU) never train the same run.
+# A lock whose owner process no longer exists (e.g. after a server restart)
+# is stale and gets taken over.
+LOCK_PATH = os.path.join(OUT_DIR, f"lock_{RUN_NAME}")
+
+
+def _lock_owner_alive():
+    try:
+        pid = int(open(LOCK_PATH).read().strip())
+        with open(f"/proc/{pid}/cmdline", "rb") as f:
+            cmd = f.read().decode(errors="ignore").split("\0")
+    except (OSError, ValueError):
+        return False
+    return (any(c.endswith("train.py") for c in cmd)
+            and "--seed" in cmd and cmd[cmd.index("--seed") + 1] == str(args.seed)
+            and VARIANT in cmd and (VARIANT != "wavelet_ml"
+                                    or (WAVELET in cmd and str(LEVELS) in cmd)))
+
+
+def _acquire_lock():
+    for _ in range(2):
+        try:
+            fd = os.open(LOCK_PATH, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        except FileExistsError:
+            if _lock_owner_alive():
+                return False
+            os.remove(LOCK_PATH)          # stale lock — take it over
+            continue
+        with os.fdopen(fd, "w") as f:
+            f.write(str(os.getpid()))
+        atexit.register(lambda: os.path.exists(LOCK_PATH) and os.remove(LOCK_PATH))
+        return True
+    return False
+
+
+if not args.smoke and not _acquire_lock():
+    print(f"[{RUN_NAME}] is being trained by another worker — skipping")
     sys.exit(0)
 
 print(f"Variant    : {VARIANT}")
