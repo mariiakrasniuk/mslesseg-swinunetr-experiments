@@ -1,0 +1,16 @@
+run,lesion_recall@5fp,lesion_recall@10fp,lesion_recall@20fp,recall_small@5fp,recall_small@10fp,recall_small@20fp
+baseline_s1,0.6004662004662005,nan,nan,0.26857142857142857,nan,nan
+baseline_s2,0.6177156177156178,nan,nan,0.2767857142857143,nan,nan
+baseline_s3,0.6095571095571095,nan,nan,0.27142857142857146,nan,nan
+wavelet_ml_db2_l2_s1,nan,0.6775446775446775,nan,nan,0.35595238095238096,nan
+wavelet_ml_db2_l2_s2,0.5864589955499047,nan,nan,0.26266233766233765,nan,nan
+wavelet_ml_db2_l2_s3,nan,0.6905594405594405,nan,nan,0.42410714285714285,nan
+wavelet_ml_haar_l2_s1,0.5965034965034965,nan,nan,0.2571428571428571,nan,nan
+wavelet_ml_haar_l2_s2,nan,0.6130536130536131,nan,nan,0.2507142857142857,nan
+wavelet_ml_haar_l2_s3,0.627039627039627,nan,nan,0.29285714285714287,nan,nan
+wavelet_ml_haar_l3_s1,nan,0.6816239316239316,nan,nan,0.3636904761904762,nan
+wavelet_ml_haar_l3_s2,0.6367521367521367,nan,nan,0.3011904761904762,nan,nan
+wavelet_ml_haar_l3_s3,nan,0.7031150667514304,nan,nan,0.40064935064935064,nan
+wavelet_ml_sym4_l1_s1,0.6172494172494173,nan,nan,0.28714285714285714,nan,nan
+wavelet_ml_sym4_l1_s2,0.5185420639966095,nan,nan,0.17077922077922078,nan,nan
+wavelet_ml_sym4_l1_s3,nan,0.6672494172494172,nan,nan,0.3535714285714286,nan
