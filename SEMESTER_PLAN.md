@@ -85,7 +85,20 @@ Nothing below should be concluded from single-seed, soft-Dice numbers.
   - Checkpoint selection: val Dice at threshold 0.5, computed correctly.
   - Seeds: `--seed`; runs are saved as `checkpoints/best_<run>_s<seed>.pth`.
   - Queue: [run_queue.sh](run_queue.sh), 5 configs × seeds 1–3, run sequentially and resumable.
-- [ ] **Re-run the key configurations with ≥3 seeds:** baseline, single-level Haar, db2 L2, sym4 L1/L3. If compute allows, use patient-level k-fold cross-validation over P1–P53 instead of a single val split. Report mean ± std and a paired test across test patients (e.g. Wilcoxon).
+- [x] **Phase 0 result (2026-10-01, test set, 3 seeds, [aggregate.md](results/seeds_test/aggregate.md)):**
+
+  | Model | Dice@0.5 | Δ vs baseline (paired Wilcoxon) | Lesion recall | Small-lesion recall | FP lesions/pt |
+  |---|---|---|---|---|---|
+  | baseline | 0.680 ± 0.010 | – | 0.708 | 0.319 | 6.6 |
+  | haar L3 | 0.679 ± 0.007 | −0.001 (p=0.39) | **0.753** | **0.392** | 10.0 |
+  | db2 L2 | 0.676 ± 0.009 | −0.003 (p=0.11) | 0.713 | 0.348 | 8.2 |
+  | haar L2 | 0.674 ± 0.004 | −0.006 (p=0.09) | 0.721 | 0.325 | 8.3 |
+  | sym4 L1 | 0.660 ± 0.019 | **−0.019 (p<0.001)** | 0.689 | 0.292 | 7.6 |
+
+  - **No fixed-wavelet configuration improves Dice over the baseline.** sym4 L1 is significantly worse. With correct checkpoint selection and patience 20, all models now reach about 0.68 test Dice, compared with about 0.64 for the RP2 checkpoints.
+  - **Open lead:** haar L3 finds more lesions, small ones especially (0.39 vs 0.32), but with more false positives. A fair matched-FP comparison is still missing, because the baseline's FROC curve doesn't reach 10 FP lesions per patient within the current threshold range.
+  - The RP2 conclusion that "wavelet patch embedding improves segmentation" is **not supported** once seeds and correct evaluation are used.
+- [x] **Re-run the key configurations with ≥3 seeds:** baseline, single-level Haar, db2 L2, sym4 L1/L3. If compute allows, use patient-level k-fold cross-validation over P1–P53 instead of a single val split. Report mean ± std and a paired test across test patients (e.g. Wilcoxon).
 
 **Deliverable:** a corrected RP2 table with error bars. It is the reference point for everything else.
 

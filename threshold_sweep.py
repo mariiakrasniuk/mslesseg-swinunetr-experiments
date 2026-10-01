@@ -39,11 +39,11 @@ parser.add_argument("--split", type=str, default="test", choices=["test", "val"]
 parser.add_argument("--probs_dir", type=str, default=None,
                     help="Default: results/eval_<split>/probs")
 parser.add_argument("--thresholds", type=str, default=None,
-                    help="Comma-separated; default 0.05..0.95 step 0.05 plus 0.97..0.999")
+                    help="Comma-separated; default 0.01..0.04, 0.05..0.95 step 0.05, 0.97..0.999")
 parser.add_argument("--min_lesion_size", type=int, default=3)
 parser.add_argument("--size_bins", type=str, default="40,115",
                     help="Lesion volume bin edges in mm^3: small < a <= medium < b <= large")
-parser.add_argument("--fp_levels", type=str, default="5,10,20",
+parser.add_argument("--fp_levels", type=str, default="5,6,7,8",
                     help="FP lesions per case at which lesion recall is interpolated")
 parser.add_argument("--select_from", type=str, default=None,
                     help="selected_thresholds.csv from a val sweep, applied to this split")
@@ -54,8 +54,10 @@ PROBS_DIR = args.probs_dir or os.path.join("results", f"eval_{args.split}", "pro
 OUT_DIR   = os.path.join(os.path.dirname(PROBS_DIR.rstrip("/\\")), "sweep")
 # Models trained with Dice loss are very confident, so the useful operating
 # points sit close to 1. float16 maps resolve up to ~0.9995.
+# Low end: saved maps are exact down to 0.01 (evaluate_lesions.py zeroes below).
 THRESHOLDS = ([float(t) for t in args.thresholds.split(",")] if args.thresholds
-              else [round(t, 2) for t in np.arange(0.05, 0.951, 0.05)]
+              else [0.01, 0.02, 0.03, 0.04]
+                   + [round(t, 2) for t in np.arange(0.05, 0.951, 0.05)]
                    + [0.97, 0.98, 0.99, 0.995, 0.998, 0.999])
 EDGES     = [float(v) for v in args.size_bins.split(",")]
 BIN_NAMES = ["small", "medium", "large"]
