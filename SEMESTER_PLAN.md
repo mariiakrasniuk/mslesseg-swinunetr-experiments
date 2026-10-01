@@ -119,6 +119,20 @@ Build this once, then use it on every model, including the 11 existing checkpoin
 
 **Deliverable:** `evaluate_lesions.py` plus a lesion-level results table for the baseline and all RP2 wavelet models. This already answers "do wavelets find more small lesions?" for the fixed filters.
 
+### Experiment 2 — Wavelets inside the network *(added 2026-10-01 after Phase 0)*
+
+Phase 0 showed that a wavelet at the input can't add information: a DWT followed by a linear projection is in the same function class as the baseline's learned 2×2×2 convolution. SwinUNETR also passes the raw image to the decoder through a full-resolution conv skip. Patch merging is the same kind of layer: it concatenates the 2×2×2 neighbours and applies Linear(8C→2C). So the wavelet has to change *which information reaches the decoder*.
+
+In MONAI's SwinUNETR, the decoder's 48³ skip receives the patch embedding output from before any attention. The stage-1 attention features only continue after merging (24³). Experiment 2 adds an extra skip from the stage-1 features (before merging) to the decoder's 48³ level:
+
+| Variant | Extra skip carries | Purpose |
+|---|---|---|
+| baseline | – | reference (Phase 0 runs) |
+| `detail_skip_plain` | stage-1 features | control: does an extra path help at all? |
+| `detail_skip_haar` | only their Haar high-frequency part (features − 2×2×2 block mean) | does separating out the wavelet detail help beyond the plain path? |
+
+Both variants add the same 127k parameters and are exactly the baseline at initialisation (the output conv is zero-initialised). C carries a filtered version of B's information, so it tests an inductive bias, not extra information. Run: `QUEUE=exp2` in [run_queue.sh](run_queue.sh), 3 seeds each, evaluated exactly like Phase 0. Learnable filters (Phase 2) go into the detail path if C beats B.
+
 ### Phase 2 — Learnable filters *(core contribution)*
 
 Make the 1D analysis filters `lo` / `hi` `nn.Parameter`s. Keep building the 3D bank as separable outer products, so the model has only a few dozen parameters per filter pair, not a free 3D kernel.

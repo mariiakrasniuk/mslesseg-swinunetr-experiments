@@ -402,3 +402,53 @@ class WaveletPatchEmbedML(nn.Module):
         return self.proj(x)
 
 
+
+
+class WaveletDetailSkip(nn.Module):
+    """
+    Experiment 2 — extra decoder skip carrying stage-1 detail.
+
+    In SwinUNETR the decoder's 48³ skip receives the patch-embedding output
+    from before any attention; the stage-1 attention features only continue
+    after patch merging (24³). This module turns those pre-merging stage-1
+    features into an extra skip that is added to the decoder's 48³ skip.
+
+    mode
+        'plain'   : the stage-1 features themselves (control).
+        'haar_hf' : only their high-frequency part — Haar DWT per channel,
+                    LLL band zeroed, inverse DWT. Equals the features minus
+                    their 2×2×2 block mean, i.e. exactly the detail that patch
+                    merging has to compress.
+
+    Both modes have identical parameters: a residual conv block followed by a
+    zero-initialised 1×1×1 conv, so at initialisation the model is exactly the
+    baseline and any contribution of the skip is learned.
+
+    Input/Output shape: [B, C, D, H, W]
+    """
+
+    def __init__(self, channels: int, mode: str = "haar_hf"):
+        super().__init__()
+        from monai.networks.blocks import UnetrBasicBlock
+        if mode not in ("plain", "haar_hf"):
+            raise ValueError(f"Unknown detail skip mode '{mode}'")
+        self.mode = mode
+        if mode == "haar_hf":
+            self.dwt  = HaarDWT3d()
+            self.idwt = HaarIDWT3d()
+        self.block = UnetrBasicBlock(spatial_dims=3, in_channels=channels, out_channels=channels,
+                                     kernel_size=3, stride=1, norm_name="instance", res_block=True)
+        self.out = nn.Conv3d(channels, channels, kernel_size=1)
+        nn.init.zeros_(self.out.weight)
+        nn.init.zeros_(self.out.bias)
+
+    def high_pass(self, x: torch.Tensor) -> torch.Tensor:
+        B, C, D, H, W = x.shape
+        bands = self.dwt(x.reshape(B * C, 1, D, H, W))
+        bands = torch.cat([torch.zeros_like(bands[:, :1]), bands[:, 1:]], dim=1)  # drop LLL
+        return self.idwt(bands).reshape(B, C, D, H, W)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        if self.mode == "haar_hf":
+            x = self.high_pass(x)
+        return self.out(self.block(x))

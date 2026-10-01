@@ -23,7 +23,7 @@ from splits import TRAIN_PATIENTS, VAL_PATIENTS
 # ------------------
 parser = argparse.ArgumentParser()
 parser.add_argument("--variant", type=str, default="baseline",
-                    choices=["baseline", "wavelet_a", "wavelet_ml"],
+                    choices=["baseline", "wavelet_a", "wavelet_ml", "detail_skip_plain", "detail_skip_haar"],
                     help="Model variant to train")
 parser.add_argument("--wavelet", type=str, default="haar",
                     choices=["haar", "db2", "sym4"],

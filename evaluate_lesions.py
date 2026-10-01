@@ -63,7 +63,7 @@ RP2_RUNS = list(RUNS)
 
 def spec_from_name(run):
     """Spec for a seeded run name, e.g. 'wavelet_ml_sym4_l1_s2' or 'baseline_s1'."""
-    m = re.fullmatch(r"(baseline|wavelet_a|wavelet_ml_(haar|db2|sym4)_l(\d))_s(\d+)", run)
+    m = re.fullmatch(r"(baseline|wavelet_a|detail_skip_plain|detail_skip_haar|wavelet_ml_(haar|db2|sym4)_l(\d))_s(\d+)", run)
     if not m:
         return None
     if m.group(2):
