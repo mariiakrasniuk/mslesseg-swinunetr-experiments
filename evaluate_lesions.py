@@ -63,9 +63,9 @@ RP2_RUNS = list(RUNS)
 
 def spec_from_name(run):
     """Spec for a seeded run name, e.g. 'wavelet_ml_sym4_l1_s2' or 'baseline_s1'."""
-    # Optional loss suffixes (_dicebce, _hf<w>) don't change the architecture.
+    # Optional recipe/loss suffixes (_r2, _dicebce, _hf<w>) don't change the architecture.
     m = re.fullmatch(r"(baseline|wavelet_a|detail_skip_plain|detail_skip_haar|wavelet_ml_(haar|db2|sym4)_l(\d))"
-                     r"(?:_dicebce)?(?:_hf[\d.]+)?_s(\d+)", run)
+                     r"(?:_r2)?(?:_dicebce)?(?:_hf[\d.]+)?_s(\d+)", run)
     if not m:
         return None
     if m.group(2):
@@ -94,6 +94,11 @@ parser.add_argument("--limit", type=int, default=None,
                     help="Evaluate only the first N cases (smoke test)")
 parser.add_argument("--device", type=str, default="cuda")
 parser.add_argument("--out_dir", type=str, default=None)
+parser.add_argument("--tta", type=str, default="none", choices=["none", "flip3", "flip7"],
+                    help="Test-time augmentation: average over the identity plus mirror flips "
+                         "(flip3: each axis once = 4 passes; flip7: all axis combinations = 8 passes)")
+parser.add_argument("--overlap", type=float, default=0.25,
+                    help="Sliding-window overlap (MONAI default 0.25)")
 parser.add_argument("--save_probs", action="store_true",
                     help="Save float16 probability maps (npz) for threshold_sweep.py")
 args = parser.parse_args()
@@ -172,6 +177,25 @@ ds = CacheDataset(data, transform=get_val_transforms(), cache_rate=1.0, num_work
 loader = DataLoader(ds, batch_size=1, shuffle=False, num_workers=0)
 
 # ------------------
+# Inference (optionally with flip TTA)
+# ------------------
+FLIPS = {"none": [()],
+         "flip3": [(), (2,), (3,), (4,)],
+         "flip7": [(), (2,), (3,), (4,), (2, 3), (2, 4), (3, 4), (2, 3, 4)]}[args.tta]
+
+
+def predict(model, x):
+    """Sigmoid probabilities, averaged over the TTA flips (flipped back first)."""
+    acc = 0.0
+    for dims in FLIPS:
+        xi = torch.flip(x, dims) if dims else x
+        p = torch.sigmoid(sliding_window_inference(xi, ROI_SIZE, SW_BATCH_SIZE, model,
+                                                   overlap=args.overlap))
+        acc = acc + (torch.flip(p, dims) if dims else p)
+    return acc / len(FLIPS)
+
+
+# ------------------
 # Evaluate
 # ------------------
 all_patient_rows, all_lesion_rows, summary_rows = [], [], []
@@ -205,7 +229,7 @@ for run in args.runs:
             x = batch["image"].to(args.device)
             y = batch["label"].to(args.device)
 
-            probs = torch.sigmoid(sliding_window_inference(x, ROI_SIZE, SW_BATCH_SIZE, model))
+            probs = predict(model, x)
 
             # Dice exactly as computed in RP2 (train.py / final_test_evaluation.py)
             rp2_dice = float(rp2_metric(probs, y).mean())

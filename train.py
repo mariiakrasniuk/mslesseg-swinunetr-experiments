@@ -1,5 +1,6 @@
 import argparse
 import atexit
+import math
 import os
 import sys
 import time
@@ -55,9 +56,20 @@ parser.add_argument("--hf_weight", type=float, default=0.0,
                     help="Weight of the wavelet high-frequency loss (0 = off)")
 parser.add_argument("--hf_levels", type=int, default=3,
                     help="Haar decomposition levels used by the high-frequency loss")
+parser.add_argument("--recipe", type=str, default="r1", choices=["r1", "r2"],
+                    help="r1: Phase 0-3 recipe (constant LR, early stopping, pos/neg voxel crops). "
+                         "r2: warmup + cosine LR over a fixed 100 epochs, lesion-balanced crops, "
+                         "intensity augmentation, cached preprocessing")
 parser.add_argument("--smoke", action="store_true",
                     help="1 epoch, 2 train batches, 2 val cases — checks the pipeline end to end")
 args = parser.parse_args()
+
+if args.recipe == "r2":
+    if args.aug == "none":
+        args.aug = "image"
+    args.epochs, args.patience = 100, 0     # fixed budget: the cosine schedule needs it
+SAMPLER = "lesion" if args.recipe == "r2" else "posneg"
+WARMUP_EPOCHS = 5
 
 VARIANT     = args.variant
 WAVELET     = args.wavelet
@@ -79,8 +91,10 @@ if MULTIMODAL:
     RUN_NAME += "_mm"
 if USE_V2:
     RUN_NAME += "_v2"
-if AUG != "none":
+if AUG != "none" and not (args.recipe == "r2" and AUG == "image"):
     RUN_NAME += f"_aug_{AUG}"
+if args.recipe != "r1":
+    RUN_NAME += f"_{args.recipe}"
 if args.loss != "dice":
     RUN_NAME += f"_{args.loss}"
 if args.hf_weight > 0:
@@ -99,7 +113,7 @@ ROI_SIZE = (96, 96, 96)
 SW_BATCH_SIZE = 2
 
 # Early stopping
-PATIENCE = args.patience
+PATIENCE = args.patience if args.patience > 0 else float("inf")   # 0 = no early stopping
 MIN_DELTA = 1e-4
 
 # Run-aware output paths
@@ -163,6 +177,7 @@ if VARIANT == "wavelet_ml":
 print(f"Multimodal : {MULTIMODAL}  |  SwinV2: {USE_V2}  |  in_channels: {IN_CHANNELS}")
 print(f"Aug        : {AUG}  |  intensity_aug={INTENSITY_AUG}  coeff_aug={COEFF_AUG}")
 print(f"Run name   : {RUN_NAME}  |  seed: {args.seed}  |  epochs: {EPOCHS}  patience: {PATIENCE}")
+print(f"Recipe     : {args.recipe}  |  sampler: {SAMPLER}  |  aug: {AUG}")
 print(f"Loss       : {args.loss}" + (f" + {args.hf_weight:g} x wavelet HF ({args.hf_levels} levels)"
                                      if args.hf_weight > 0 else ""))
 print(f"Best model will be saved to: {BEST_MODEL_PATH}")
@@ -175,6 +190,7 @@ set_determinism(seed=args.seed)
 train_loader, val_loader = get_loaders(
     ROOT, TRAIN_PATIENTS, VAL_PATIENTS,
     multimodal=MULTIMODAL, intensity_aug=INTENSITY_AUG, seed=args.seed,
+    sampler=SAMPLER, cache=(args.recipe == "r2" and not args.smoke),
 )
 N_TRAIN = 2 if args.smoke else len(train_loader)
 N_VAL   = 2 if args.smoke else len(val_loader)
@@ -199,6 +215,19 @@ def loss_fn(logits, y):
         loss = loss + args.hf_weight * _hf_loss(logits, y)
     return loss
 optimizer = AdamW(model.parameters(), lr=LR, weight_decay=WEIGHT_DECAY)
+
+
+def _lr_factor(epoch_idx):
+    """r2: linear warmup from 0.1×LR, then cosine decay to 0 (stepped once per epoch)."""
+    if args.recipe != "r2":
+        return 1.0
+    if epoch_idx < WARMUP_EPOCHS:
+        return 0.1 + 0.9 * epoch_idx / WARMUP_EPOCHS
+    t = (epoch_idx - WARMUP_EPOCHS) / max(EPOCHS - WARMUP_EPOCHS, 1)
+    return 0.5 * (1 + math.cos(math.pi * min(t, 1.0)))
+
+
+scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, _lr_factor)
 
 # Dice on binary masks (probability > 0.5). Passing raw probabilities to
 # DiceMetric does NOT threshold them for a 1-channel output in MONAI 1.5.
@@ -228,6 +257,8 @@ if os.path.exists(RESUME_PATH) and not args.smoke:
     ckpt = torch.load(RESUME_PATH, map_location=DEVICE, weights_only=False)
     model.load_state_dict(ckpt["model"])
     optimizer.load_state_dict(ckpt["optimizer"])
+    if "scheduler" in ckpt:
+        scheduler.load_state_dict(ckpt["scheduler"])
     best_dice, best_epoch = ckpt["best_dice"], ckpt["best_epoch"]
     best_val_loss, early_stop_counter = ckpt["best_val_loss"], ckpt["early_stop_counter"]
     train_loss_history, val_loss_history = ckpt["train_loss"], ckpt["val_loss"]
@@ -338,6 +369,7 @@ for epoch in range(start_epoch, EPOCHS + 1):
         f"Val Loss: {val_loss:.4f} | "
         f"Train Dice: {train_dice:.4f} | "
         f"Val Dice: {val_dice:.4f} | "
+        f"lr {optimizer.param_groups[0]['lr']:.1e} | "
         f"{time.time() - epoch_start:.0f}s"
     )
 
@@ -356,10 +388,13 @@ for epoch in range(start_epoch, EPOCHS + 1):
         early_stop_counter += 1
         print(f"EarlyStopping {early_stop_counter}/{PATIENCE}")
 
+    scheduler.step()
+
     # ========= RESUME POINT =========
     if not args.smoke:
         torch.save({
             "epoch": epoch, "model": model.state_dict(), "optimizer": optimizer.state_dict(),
+            "scheduler": scheduler.state_dict(),
             "best_dice": best_dice, "best_epoch": best_epoch,
             "best_val_loss": best_val_loss, "early_stop_counter": early_stop_counter,
             "train_loss": train_loss_history, "val_loss": val_loss_history,

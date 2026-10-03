@@ -157,6 +157,32 @@ Dice loss is volume-weighted, so a missed small lesion barely changes it. The RG
 
 Wavelet HF loss ([wavelet.py](wavelet.py), `WaveletHFLoss`): Haar detail bands of the predicted probability map vs. the ground-truth mask over 3 levels, with Dice-like normalisation. It is surface-weighted, so small lesions count more. Missing a 64-voxel lesion next to a 64,000-voxel one costs 21× more than under Dice loss. The weight is fixed at 1.0 *a priori* and not tuned on test. Run: `QUEUE=exp3`, 3 seeds each.
 
+**Result (2026-10-03, test set, 3 seeds, [aggregate.md](results/exp3_test/aggregate.md)):**
+
+| Model | Val Dice | Test Dice@0.5 | Δ vs baseline (p) | Lesion recall @8 FP/pt | Small-lesion recall @8 FP/pt |
+|---|---|---|---|---|---|
+| baseline (Dice) | 0.749 | 0.680 ± 0.010 | – | 0.674 ± 0.020 | 0.356 ± 0.011 |
+| Dice + BCE | 0.751 | 0.683 ± 0.011 | +0.003 (p=0.90) | 0.661 ± 0.037 | 0.327 ± 0.051 |
+| Dice + BCE + wavelet HF | 0.757 | 0.678 ± 0.009 | −0.001 (p=0.90) | 0.680 ± 0.009 | 0.356 ± 0.023 |
+
+- **No improvement on test.** The +0.008 validation lead of the wavelet loss didn't carry over (validation also selected the checkpoints, so it is optimistic).
+- Detection at matched false positives is equal to the baseline. The only difference is a lower seed-to-seed spread with the wavelet loss (sd 0.009 vs 0.020–0.037), too weak to claim.
+- **Overall (Phase 0 + Exp. 2 + Exp. 3):** wavelets at the input, in an inner skip, and in the loss, plus Dice + BCE, all land at ≈ 0.68 test Dice with equal lesion detection. *What this shows:* none of these specific modifications produced a detectable improvement over this baseline under this training recipe. *What it does not show:* that 0.68 is a fundamental ceiling, or that the models are equivalent. With 22 test patients and 3 seeds, the minimum detectable Dice difference is about 0.015 (80% power), and equivalence would need a dedicated equivalence test. The equivalence argument (a wavelet plus a linear projection is the same function class as a learned convolution) is exact only for single-level Haar (`wavelet_a`); for db2/sym4 and multi-level it is a plausible explanation, not a proof.
+
+**Error analysis of the baseline (2026-10-03, test set, 3 seeds pooled):**
+- **About 80% of voxel errors are boundary errors on lesions that were found.** 80% of false-negative voxels are under-segmentation of detected lesions, and 79% of false-positive voxels are over-segmentation. Pooled Dice 0.715. Finding every missed lesion would give 0.755; removing every spurious blob 0.734; perfect boundaries 0.943. *Dice is limited mainly by boundary accuracy on medium and large lesions.*
+- **Small lesions (< 40 mm³) are 33% of lesions but only 2.8% of lesion volume.** Detecting all of them would raise Dice by at most about 0.02, so small-lesion progress must be judged with lesion-level metrics, not Dice.
+- **89% of missed small lesions have maximum probability < 0.05.** The model doesn't respond to them at all, so threshold tuning can't recover them; it takes training exposure and signal (sampling, loss).
+- **The training recipe was never tuned:** constant LR, batch size 1 per crop, no intensity augmentation, crop centres sampled per lesion *voxel* (so large lesions dominate), no TTA or ensembling.
+
+### Experiment 4 — Stronger recipe, ensembling, and wavelets with a real job *(planned 2026-10-03)*
+
+Driven by the error analysis above:
+- **A. No training:** seed ensembles + small-component removal (k chosen on validation) from the saved probability maps ([ensemble_eval.py](ensemble_eval.py)). Flip TTA (`evaluate_lesions.py --tta flip3/flip7`).
+- **B. Recipe r2** (`train.py --recipe r2`), applied identically to every model: warmup + cosine LR over a fixed 100 epochs, lesion-balanced crop sampling (each lesion *component* equally likely as a crop centre; small-lesion crops go from 0–0.8% to 3–20%), intensity augmentation, cached preprocessing. Runs: `baseline_r2` and `baseline_r2_hf1` (wavelet HF loss, which now sees small lesions far more often), 3 seeds each (`QUEUE=r2`).
+- **C. Next wavelet architecture** (if justified): progressive DWT downsampling + IDWT upsampling that reuses the encoder's high-frequency bands (WaveFormer-style). Motivation: about 80% of the error is at boundaries, which is what IDWT reconstruction with stored detail bands targets. Needs a non-wavelet control with the same information path (learned strided down/up-sampling). Then learnable filters inside it, ideally via a **lifting scheme** (perfect reconstruction is guaranteed for any learned parameters), with Haar/db2 initialisation and a random-init control.
+- Success criteria are fixed in advance: consistent across seeds, judged on validation, confirmed once on test, with Dice *and* lesion metrics (small-lesion recall at matched FP).
+
 ### Phase 2 — Learnable filters *(core contribution)*
 
 Make the 1D analysis filters `lo` / `hi` `nn.Parameter`s. Keep building the 3D bank as separable outer products, so the model has only a few dozen parameters per filter pair, not a free 3D kernel.
