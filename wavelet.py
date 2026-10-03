@@ -452,3 +452,43 @@ class WaveletDetailSkip(nn.Module):
         if self.mode == "haar_hf":
             x = self.high_pass(x)
         return self.out(self.block(x))
+
+
+class WaveletHFLoss(nn.Module):
+    """
+    Wavelet high-frequency loss — compares the detail bands of the predicted
+    lesion probability map with those of the ground-truth mask.
+
+    Dice loss is volume-weighted: a missed 20-voxel lesion barely changes it.
+    The high-frequency Haar bands of a mask are non-zero only at lesion
+    boundaries, so this loss is surface-weighted instead, and small lesions —
+    which have a large surface relative to their volume — get proportionally
+    more weight. Applied over `levels` scales (LLL recursively decomposed),
+    so boundaries are compared at 2, 4, 8, ... voxel scales.
+
+        L = Σ_levels Σ_bands |HF(p) − HF(y)|  /  ( Σ |HF(p)| + Σ |HF(y)| + smooth )
+
+    The Dice-like normalisation keeps the loss in [0, 1]; `smooth` keeps
+    lesion-free patches stable (an empty prediction on an empty patch → 0).
+
+    Input: logits [B, 1, D, H, W] (sigmoid applied here), target [B, 1, D, H, W]
+    """
+
+    def __init__(self, levels: int = 3, smooth: float = 1.0):
+        super().__init__()
+        self.levels = levels
+        self.smooth = smooth
+        self.dwt = HaarDWT3d()
+
+    def forward(self, logits: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+        p, y = torch.sigmoid(logits), target.float()
+        diff = norm = 0.0
+        for _ in range(self.levels):
+            if min(p.shape[2:]) < 2:
+                break
+            bp, by = self.dwt(p), self.dwt(y)
+            hp, hy = bp[:, 1:], by[:, 1:]                 # 7 detail bands
+            diff = diff + (hp - hy).abs().sum()
+            norm = norm + hp.abs().sum() + hy.abs().sum()
+            p, y = bp[:, :1], by[:, :1]                   # recurse on LLL
+        return diff / (norm + self.smooth)

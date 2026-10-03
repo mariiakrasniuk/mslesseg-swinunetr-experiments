@@ -30,12 +30,16 @@ case "$QUEUE" in
         "--variant detail_skip_plain"
         "--variant detail_skip_haar"
     ) ;;
+    exp3) CONFIGS=(                       # training objective (baseline arch.)
+        "--variant baseline --loss dicebce"
+        "--variant baseline --loss dicebce --hf_weight 1"
+    ) ;;
     *) echo "unknown QUEUE=$QUEUE"; exit 1 ;;
 esac
 
 for seed in $SEEDS; do
     for cfg in "${CONFIGS[@]}"; do
-        tag="$(echo "$cfg" | sed -e 's/--variant //' -e 's/ --wavelet /_/' -e 's/ --levels /_l/')_s${seed}"
+        tag="$(echo "$cfg" | sed -e 's/--variant //' -e 's/ --wavelet /_/' -e 's/ --levels /_l/'                                  -e 's/ --loss /_/' -e 's/ --hf_weight /_hf/')_s${seed}"
         echo "[$(date '+%F %T')] START $tag"
         if python train.py $cfg --seed "$seed" >> "logs/train_${tag}.log" 2>&1; then
             echo "[$(date '+%F %T')] DONE  $tag  ($(grep -h 'best val Dice\|skipping' "logs/train_${tag}.log" | tail -1))"

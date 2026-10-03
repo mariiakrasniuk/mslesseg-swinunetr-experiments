@@ -133,6 +133,30 @@ In MONAI's SwinUNETR, the decoder's 48³ skip receives the patch embedding outpu
 
 Both variants add the same 127k parameters and are exactly the baseline at initialisation (the output conv is zero-initialised). C carries a filtered version of B's information, so it tests an inductive bias, not extra information. Run: `QUEUE=exp2` in [run_queue.sh](run_queue.sh), 3 seeds each, evaluated exactly like Phase 0. Learnable filters (Phase 2) go into the detail path if C beats B.
 
+**Result (2026-10-03, test set, 3 seeds, [aggregate.md](results/exp2_test/aggregate.md)):**
+
+| Model | Test Dice@0.5 | Δ vs baseline (p) | Val Dice (mean) | Small-lesion recall @8 FP/pt |
+|---|---|---|---|---|
+| baseline | 0.680 ± 0.010 | – | 0.749 | 0.356 |
+| detail_skip_plain | 0.689 ± 0.005 | +0.009 (p=0.07) | 0.748 | 0.354 |
+| detail_skip_haar | 0.678 ± 0.001 | −0.001 (p=0.50) | 0.746 | 0.340 |
+
+- **The Haar detail skip brings no benefit.** It is equal to the baseline in Dice, and slightly below both the baseline and the plain skip at matched false positives. Separating out the wavelet detail doesn't help, so learnable filters in this path aren't promising.
+- **The plain skip gives a small test-Dice gain that isn't confirmed.** +0.009 with p=0.07 on test, but no gain on validation (0.748 vs 0.749), and equal detection at matched false positives. At most a weak trend.
+- Together with Phase 0, wavelets in the representation (at the input or in an inner skip) don't beat a correctly evaluated baseline. **Next: wavelets in the training objective**, plus Dice + BCE, which the RGA paper (Giugliano & Sannino, Front. Med. 2026) also supports.
+
+### Experiment 3 — Wavelets in the training objective *(added 2026-10-03)*
+
+Dice loss is volume-weighted, so a missed small lesion barely changes it. The RGA paper (Giugliano & Sannino, Front. Med. 2026, MSLesSeg) also gets its gains from the objective, not the architecture, and trains with Dice + CE.
+
+| Config | Loss | Question |
+|---|---|---|
+| baseline (Phase 0) | Dice | reference |
+| `baseline_dicebce` | Dice + BCE | standard objective upgrade (fair for every model) |
+| `baseline_dicebce_hf1` | Dice + BCE + 1.0 × wavelet HF loss | does a wavelet boundary/small-structure loss help beyond Dice + BCE? |
+
+Wavelet HF loss ([wavelet.py](wavelet.py), `WaveletHFLoss`): Haar detail bands of the predicted probability map vs. the ground-truth mask over 3 levels, with Dice-like normalisation. It is surface-weighted, so small lesions count more. Missing a 64-voxel lesion next to a 64,000-voxel one costs 21× more than under Dice loss. The weight is fixed at 1.0 *a priori* and not tuned on test. Run: `QUEUE=exp3`, 3 seeds each.
+
 ### Phase 2 — Learnable filters *(core contribution)*
 
 Make the 1D analysis filters `lo` / `hi` `nn.Parameter`s. Keep building the 3D bank as separable outer products, so the model has only a few dozen parameters per filter pair, not a free 3D kernel.

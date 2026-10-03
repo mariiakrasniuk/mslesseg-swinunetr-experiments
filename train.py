@@ -9,12 +9,13 @@ import matplotlib.pyplot as plt
 from torch.optim import AdamW
 from tqdm import tqdm
 
-from monai.losses import DiceLoss
+from monai.losses import DiceCELoss, DiceLoss
 from monai.metrics import DiceMetric
 from monai.inferers import sliding_window_inference
 from monai.utils import set_determinism
 
 from model import build_model
+from wavelet import WaveletHFLoss
 from dataloaders import get_loaders
 from splits import TRAIN_PATIENTS, VAL_PATIENTS
 
@@ -48,6 +49,12 @@ parser.add_argument("--patience", type=int, default=20,
                     help="Early stopping patience on validation loss")
 parser.add_argument("--out_dir", type=str, default="checkpoints",
                     help="Where checkpoints, history and curves are written")
+parser.add_argument("--loss", type=str, default="dice", choices=["dice", "dicebce"],
+                    help="dice: Dice loss (Phase 0 / Exp. 2); dicebce: Dice + binary cross-entropy")
+parser.add_argument("--hf_weight", type=float, default=0.0,
+                    help="Weight of the wavelet high-frequency loss (0 = off)")
+parser.add_argument("--hf_levels", type=int, default=3,
+                    help="Haar decomposition levels used by the high-frequency loss")
 parser.add_argument("--smoke", action="store_true",
                     help="1 epoch, 2 train batches, 2 val cases — checks the pipeline end to end")
 args = parser.parse_args()
@@ -74,6 +81,10 @@ if USE_V2:
     RUN_NAME += "_v2"
 if AUG != "none":
     RUN_NAME += f"_aug_{AUG}"
+if args.loss != "dice":
+    RUN_NAME += f"_{args.loss}"
+if args.hf_weight > 0:
+    RUN_NAME += f"_hf{args.hf_weight:g}"
 RUN_NAME += f"_s{args.seed}"
 
 # ------------------
@@ -115,16 +126,15 @@ LOCK_PATH = os.path.join(OUT_DIR, f"lock_{RUN_NAME}")
 
 
 def _lock_owner_alive():
+    """True if the lock's PID is a train.py process with exactly our arguments."""
     try:
         pid = int(open(LOCK_PATH).read().strip())
         with open(f"/proc/{pid}/cmdline", "rb") as f:
-            cmd = f.read().decode(errors="ignore").split("\0")
+            cmd = [c for c in f.read().decode(errors="ignore").split("\0") if c]
     except (OSError, ValueError):
         return False
-    return (any(c.endswith("train.py") for c in cmd)
-            and "--seed" in cmd and cmd[cmd.index("--seed") + 1] == str(args.seed)
-            and VARIANT in cmd and (VARIANT != "wavelet_ml"
-                                    or (WAVELET in cmd and str(LEVELS) in cmd)))
+    script = next((i for i, c in enumerate(cmd) if c.endswith("train.py")), None)
+    return script is not None and cmd[script + 1:] == sys.argv[1:]
 
 
 def _acquire_lock():
@@ -153,6 +163,8 @@ if VARIANT == "wavelet_ml":
 print(f"Multimodal : {MULTIMODAL}  |  SwinV2: {USE_V2}  |  in_channels: {IN_CHANNELS}")
 print(f"Aug        : {AUG}  |  intensity_aug={INTENSITY_AUG}  coeff_aug={COEFF_AUG}")
 print(f"Run name   : {RUN_NAME}  |  seed: {args.seed}  |  epochs: {EPOCHS}  patience: {PATIENCE}")
+print(f"Loss       : {args.loss}" + (f" + {args.hf_weight:g} x wavelet HF ({args.hf_levels} levels)"
+                                     if args.hf_weight > 0 else ""))
 print(f"Best model will be saved to: {BEST_MODEL_PATH}")
 
 set_determinism(seed=args.seed)
@@ -177,7 +189,15 @@ model = build_model(VARIANT, in_channels=IN_CHANNELS, use_checkpoint=True,
 # ------------------
 # Loss / Optim / Metrics
 # ------------------
-loss_fn = DiceLoss(sigmoid=True)
+_seg_loss = DiceLoss(sigmoid=True) if args.loss == "dice" else DiceCELoss(sigmoid=True)
+_hf_loss = WaveletHFLoss(levels=args.hf_levels).to(DEVICE) if args.hf_weight > 0 else None
+
+
+def loss_fn(logits, y):
+    loss = _seg_loss(logits, y)
+    if _hf_loss is not None:
+        loss = loss + args.hf_weight * _hf_loss(logits, y)
+    return loss
 optimizer = AdamW(model.parameters(), lr=LR, weight_decay=WEIGHT_DECAY)
 
 # Dice on binary masks (probability > 0.5). Passing raw probabilities to
