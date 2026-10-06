@@ -1,3 +1,4 @@
+import torch
 import torch.nn as nn
 from monai.networks.nets import SwinUNETR
 
@@ -5,6 +6,7 @@ from wavelet import (
     WaveletDetailSkip,
     WaveletPatchEmbed,
     WaveletPatchEmbedML,
+    WaveletUpsample,
 )
 
 
@@ -68,6 +70,57 @@ class SwinUNETRDetailSkip(SwinUNETR):
         return self.out(out)
 
 
+class SwinUNETRWaveUp(SwinUNETR):
+    """
+    SwinUNETR whose 5 decoder upsamplings use wavelet synthesis
+    (wavelet.WaveletUpsample) instead of transposed convolutions. Detail bands
+    come from the encoder features at the target resolution that the standard
+    decoder never receives: each transformer stage's output BEFORE patch
+    merging (48³, 24³, 12³, 6³ for a 96³ patch) and the full-resolution conv
+    features enc0 (96³).
+    """
+
+    def __init__(self, filters: str, **kwargs):
+        super().__init__(**kwargs)
+        if self.swinViT.use_v2:
+            raise ValueError("wavelet upsampling is implemented for SwinUNETR v1 only")
+        fs = kwargs["feature_size"]
+        for i in range(1, 5):
+            stage = getattr(self.swinViT, f"layers{i}")[0]
+            stage.downsample = _CaptureInput(stage.downsample)
+        # (decoder block, decoder channels in, encoder channels at target resolution)
+        spec = [("decoder5", 16 * fs, 8 * fs), ("decoder4", 8 * fs, 4 * fs),
+                ("decoder3", 4 * fs, 2 * fs), ("decoder2", 2 * fs, fs), ("decoder1", fs, fs)]
+        self.wave_up = nn.ModuleDict()
+        for name, dec_ch, enc_ch in spec:
+            getattr(self, name).transp_conv = nn.Identity()      # replaced by wave_up[name]
+            self.wave_up[name] = WaveletUpsample(dec_ch, enc_ch, filters=filters)
+
+    def _pre_merge(self, i):
+        x = getattr(self.swinViT, f"layers{i}")[0].downsample.captured     # [B, D, H, W, C]
+        return self.swinViT.proj_out(x.permute(0, 4, 1, 2, 3).contiguous(), self.normalize)
+
+    def _up(self, name, dec, enc_detail, skip):
+        block = getattr(self, name)
+        out = self.wave_up[name](dec, enc_detail)
+        return block.conv_block(torch.cat((out, skip), dim=1))
+
+    def forward(self, x_in):
+        self._check_input_size(x_in.shape[2:])
+        hidden_states_out = self.swinViT(x_in, self.normalize)
+        enc0 = self.encoder1(x_in)
+        enc1 = self.encoder2(hidden_states_out[0])
+        enc2 = self.encoder3(hidden_states_out[1])
+        enc3 = self.encoder4(hidden_states_out[2])
+        dec4 = self.encoder10(hidden_states_out[4])
+        dec3 = self._up("decoder5", dec4, self._pre_merge(4), hidden_states_out[3])
+        dec2 = self._up("decoder4", dec3, self._pre_merge(3), enc3)
+        dec1 = self._up("decoder3", dec2, self._pre_merge(2), enc2)
+        dec0 = self._up("decoder2", dec1, self._pre_merge(1), enc1)
+        out = self._up("decoder1", dec0, enc0, enc0)
+        return self.out(out)
+
+
 def build_model(
     variant: str,
     in_channels: int = 1,
@@ -108,6 +161,12 @@ def build_model(
         features (control) or only their Haar high-frequency part.
         +127k parameters; identical to the baseline at initialisation.
 
+    waveup_haar / waveup_haar_learn / waveup_rand_learn  [Experiment 5]
+        All 5 decoder upsamplings use wavelet synthesis: decoder → coarse
+        band, encoder features before patch merging → 7 detail bands.
+        Filters fixed Haar / trainable from Haar / trainable from random
+        (control with identical tensor flow and parameter count).
+
         Parameter count (embed_dim=48):
             levels=1 :  64  (SE)  + 432 (proj) =  496
             levels=2 : 128  (SE)  + 816 (proj) =  944
@@ -140,8 +199,15 @@ def build_model(
             feature_size=feature_size, use_checkpoint=use_checkpoint, use_v2=use_v2,
         )
 
+    elif variant in ("waveup_haar", "waveup_haar_learn", "waveup_rand_learn"):
+        return SwinUNETRWaveUp(
+            filters=variant[len("waveup_"):],
+            spatial_dims=3, in_channels=in_channels, out_channels=out_channels,
+            feature_size=feature_size, use_checkpoint=use_checkpoint, use_v2=use_v2,
+        )
+
     else:
         raise ValueError(
-            f"Unknown variant '{variant}'. Choose from: "
-            f"baseline, wavelet_a, wavelet_ml, detail_skip_plain, detail_skip_haar"
+            f"Unknown variant '{variant}'. Choose from: baseline, wavelet_a, wavelet_ml, "
+            f"detail_skip_plain, detail_skip_haar, waveup_haar, waveup_haar_learn, waveup_rand_learn"
         )

@@ -183,6 +183,33 @@ Driven by the error analysis above:
 - **C. Next wavelet architecture** (if justified): progressive DWT downsampling + IDWT upsampling that reuses the encoder's high-frequency bands (WaveFormer-style). Motivation: about 80% of the error is at boundaries, which is what IDWT reconstruction with stored detail bands targets. Needs a non-wavelet control with the same information path (learned strided down/up-sampling). Then learnable filters inside it, ideally via a **lifting scheme** (perfect reconstruction is guaranteed for any learned parameters), with Haar/db2 initialisation and a random-init control.
 - Success criteria are fixed in advance: consistent across seeds, judged on validation, confirmed once on test, with Dice *and* lesion metrics (small-lesion recall at matched FP).
 
+**Results A + B (2026-10-04, test set, 3 seeds; [r2 aggregate](results/r2_test/aggregate.md), [r2 ensembles](results/r2_ensemble/summary.md)):**
+
+| Model | Val Dice | Test Dice (single seed) | Test Dice (3-seed ensemble) | Ensemble Δ vs old baseline ensemble (p) |
+|---|---|---|---|---|
+| baseline (r1) | 0.749 | 0.680 ± 0.010 | 0.684 | – |
+| baseline r2 | 0.758 | 0.689 ± 0.004 | **0.700** | +0.016 (p=0.025) |
+| baseline r2 + wavelet HF loss | 0.765 | 0.691 ± 0.008 | **0.702** | +0.018 (p=0.003) |
+
+- **Our results improved significantly.** Recipe r2 plus seed ensembling gives 0.700–0.702 test Dice with FLAIR only, against the published multimodal baselines (0.685) and RGA nnU-Net (0.706).
+- **The wavelet loss itself contributes little.** Against its direct control (r2 baseline, same recipe): +0.0015 single-seed (p=0.61, 12/22 patients better), +0.0023 ensemble (p=0.55). On validation +0.007 (p=0.25). Lesion detection at matched FP is equal. The gain over the old baseline comes almost entirely from the recipe (cosine LR, lesion-balanced sampling, augmentation) and ensembling.
+- Thesis framing: report the full pipeline (r2 + wavelet loss + ensemble, 0.702) **with an ablation** that attributes the gain honestly (recipe ≈ +0.016, wavelet loss ≈ +0.002, not significant).
+
+### Experiment 5 — Wavelet-synthesis decoder + learnable filters *(2026-10-06, recipe r2)*
+
+Motivation: about 80% of the voxel error is at the boundaries of detected lesions. In SwinUNETR every decoder upsampling is a learned transposed convolution, and the transformer stage outputs *before* patch merging never reach the decoder at their resolution.
+
+`SwinUNETRWaveUp` ([model.py](model.py), `WaveletUpsample` in [wavelet.py](wavelet.py)) replaces all 5 decoder upsamplings with **wavelet synthesis**. The decoder supplies the coarse band (LLL); the 7 detail bands come from the encoder features at the target resolution (stage outputs before merging at 48³/24³/12³/6³, conv features at 96³). Verified: with the true LLL, Haar synthesis rebuilds the encoder features exactly (error 1e-6).
+
+| Variant | Filters | Question |
+|---|---|---|
+| baseline r2 | – (transposed conv) | reference (done) |
+| `waveup_haar` | fixed Haar | does wavelet-based reconstruction help? |
+| `waveup_haar_learn` | trainable, Haar init | does adapting the wavelet help? (supervisor's idea) |
+| `waveup_rand_learn` | trainable, random init | control: same tensor flow and parameters, no wavelet structure |
+
+All variants have 2.7M *fewer* parameters than the baseline (the transposed convolutions are removed). Run: `QUEUE=exp5`, 3 seeds each (9 runs). Evaluated like Experiment 4 (single seed, matched FP, ensembles), compared against baseline r2.
+
 ### Phase 2 — Learnable filters *(core contribution)*
 
 Make the 1D analysis filters `lo` / `hi` `nn.Parameter`s. Keep building the 3D bank as separable outer products, so the model has only a few dozen parameters per filter pair, not a free 3D kernel.

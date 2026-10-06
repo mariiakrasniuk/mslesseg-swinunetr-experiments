@@ -38,6 +38,11 @@ case "$QUEUE" in
         "--variant baseline --recipe r2"
         "--variant baseline --recipe r2 --hf_weight 1"
     ) ;;
+    exp5) CONFIGS=(                       # wavelet-synthesis decoder, recipe r2 (baseline = baseline_r2)
+        "--variant waveup_haar --recipe r2"
+        "--variant waveup_haar_learn --recipe r2"
+        "--variant waveup_rand_learn --recipe r2"
+    ) ;;
     *) echo "unknown QUEUE=$QUEUE"; exit 1 ;;
 esac
 

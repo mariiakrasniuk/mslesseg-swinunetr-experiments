@@ -64,7 +64,8 @@ RP2_RUNS = list(RUNS)
 def spec_from_name(run):
     """Spec for a seeded run name, e.g. 'wavelet_ml_sym4_l1_s2' or 'baseline_s1'."""
     # Optional recipe/loss suffixes (_r2, _dicebce, _hf<w>) don't change the architecture.
-    m = re.fullmatch(r"(baseline|wavelet_a|detail_skip_plain|detail_skip_haar|wavelet_ml_(haar|db2|sym4)_l(\d))"
+    m = re.fullmatch(r"(baseline|wavelet_a|detail_skip_plain|detail_skip_haar|waveup_haar|waveup_haar_learn|"
+                     r"waveup_rand_learn|wavelet_ml_(haar|db2|sym4)_l(\d))"
                      r"(?:_r2)?(?:_dicebce)?(?:_hf[\d.]+)?_s(\d+)", run)
     if not m:
         return None

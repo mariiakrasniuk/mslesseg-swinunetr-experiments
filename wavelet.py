@@ -492,3 +492,58 @@ class WaveletHFLoss(nn.Module):
             norm = norm + hp.abs().sum() + hy.abs().sum()
             p, y = bp[:, :1], by[:, :1]                   # recurse on LLL
         return diff / (norm + self.smooth)
+
+
+class WaveletUpsample(nn.Module):
+    """
+    Experiment 5 — wavelet-synthesis upsampling for a SwinUNETR decoder block.
+
+    Replaces the block's transposed convolution (r/2 → r). The decoder supplies
+    the coarse band, the encoder supplies the details:
+
+        LLL      = Conv1×1(decoder features at r/2)                [C]
+        details  = 7 high-frequency bands of the ENCODER features at r,
+                   from a per-channel 2×2×2 analysis filter bank   [7C at r/2]
+        output   = per-channel synthesis (inverse transform) of
+                   [LLL, details]                                  [C at r]
+
+    The encoder features used are the transformer stage outputs *before*
+    patch merging, which the standard decoder never sees at that resolution.
+    If the decoder's LLL equalled the encoder's, Haar synthesis would rebuild
+    the encoder features exactly — boundaries come from stored detail bands
+    instead of being re-learned by a transposed convolution.
+
+    filters
+        'haar'       fixed orthonormal Haar analysis/synthesis (buffers)
+        'haar_learn' trainable, initialised to Haar (supervisor's idea)
+        'rand_learn' trainable, random initialisation — control with identical
+                     tensor flow and parameter count: separates "wavelet
+                     structure" from "extra information path"
+    """
+
+    def __init__(self, dec_channels: int, enc_channels: int, filters: str = "haar"):
+        super().__init__()
+        if filters not in ("haar", "haar_learn", "rand_learn"):
+            raise ValueError(f"Unknown filters '{filters}'")
+        C = enc_channels
+        self.C = C
+        self.to_lll = nn.Conv3d(dec_channels, C, kernel_size=1)
+        haar = HaarDWT3d().weight.repeat(C, 1, 1, 1, 1)          # [8C, 1, 2, 2, 2], grouped per channel
+        if filters == "haar":
+            self.register_buffer("analysis", haar.clone())
+            self.register_buffer("synthesis", haar.clone())
+        elif filters == "haar_learn":
+            self.analysis = nn.Parameter(haar.clone())
+            self.synthesis = nn.Parameter(haar.clone())
+        else:
+            # unit expected norm per 2×2×2 filter, like the orthonormal Haar filters
+            self.analysis = nn.Parameter(torch.randn_like(haar) / 8 ** 0.5)
+            self.synthesis = nn.Parameter(torch.randn_like(haar) / 8 ** 0.5)
+
+    def forward(self, dec: torch.Tensor, enc: torch.Tensor) -> torch.Tensor:
+        B, C = dec.shape[0], self.C
+        bands = F.conv3d(enc, self.analysis, stride=2, groups=C)        # [B, 8C, r/2]
+        bands = bands.view(B, C, 8, *bands.shape[2:])
+        lll = self.to_lll(dec).unsqueeze(2)                              # [B, C, 1, r/2]
+        bands = torch.cat([lll, bands[:, :, 1:]], dim=2).flatten(1, 2)  # [B, 8C, r/2]
+        return F.conv_transpose3d(bands, self.synthesis, stride=2, groups=C)
