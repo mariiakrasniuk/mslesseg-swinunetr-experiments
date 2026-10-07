@@ -43,6 +43,11 @@ case "$QUEUE" in
         "--variant waveup_haar_learn --recipe r2"
         "--variant waveup_rand_learn --recipe r2"
     ) ;;
+    exp5c) CONFIGS=(                      # confirmation of the Haar-decoder lead (use SEEDS="4 5 6")
+        "--variant baseline --recipe r2"
+        "--variant waveup_haar --recipe r2"
+        "--variant waveup_rand_learn --recipe r2"
+    ) ;;
     *) echo "unknown QUEUE=$QUEUE"; exit 1 ;;
 esac
 

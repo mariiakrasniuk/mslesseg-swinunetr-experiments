@@ -210,6 +210,20 @@ Motivation: about 80% of the voxel error is at the boundaries of detected lesion
 
 All variants have 2.7M *fewer* parameters than the baseline (the transposed convolutions are removed). Run: `QUEUE=exp5`, 3 seeds each (9 runs). Evaluated like Experiment 4 (single seed, matched FP, ensembles), compared against baseline r2.
 
+**Result (2026-10-07, [aggregate](results/exp5_test/aggregate.md), [ensembles](results/exp5_ensemble/summary.md)):**
+
+| Model (recipe r2) | Test Dice | Ensemble Dice | Small-lesion recall @8 FP/pt, val | Small-lesion recall @8 FP/pt, test |
+|---|---|---|---|---|
+| baseline r2 | 0.689 ± 0.004 | 0.700 | 0.389 | 0.342 |
+| **waveup_haar** (fixed) | 0.689 ± 0.007 | 0.702 | **0.431** | **0.383** |
+| waveup_haar_learn | 0.687 ± 0.006 | 0.696 | 0.425 | 0.348 |
+| waveup_rand_learn (control) | 0.683 ± 0.000 | 0.691 | 0.383 | 0.349 |
+
+- **Dice: no difference** (Haar vs baseline −0.0000, p=0.90).
+- **Small-lesion detection at matched FP: first wavelet-specific lead.** The fixed-Haar decoder gives about +0.04 small-lesion recall at 8 FP/patient on *both* validation and test, and beats the identical-architecture random-filter control by +0.035 to +0.049. Patient-level bootstrap (2,000 resamples): val +0.041 [−0.013, +0.096], P(>0)=0.94; test +0.042 [−0.024, +0.060], P(>0)=0.80. The direction is consistent, but the 95% CIs include 0, so this is **suggestive, not confirmed**. One Haar seed (s2) doesn't reach 8 FP on test.
+- Learnable Haar filters: no gain over fixed Haar (Dice −0.002; small recall better on val only).
+- **Next:** confirmatory runs with seeds 4–6 for baseline r2, waveup_haar and the random control. The primary endpoint is fixed in advance: small-lesion recall at 7 and 8 FP/patient on test, patient-bootstrap CI.
+
 ### Phase 2 — Learnable filters *(core contribution)*
 
 Make the 1D analysis filters `lo` / `hi` `nn.Parameter`s. Keep building the 3D bank as separable outer products, so the model has only a few dozen parameters per filter pair, not a free 3D kernel.
