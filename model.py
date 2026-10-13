@@ -121,6 +121,11 @@ class SwinUNETRWaveUp(SwinUNETR):
         return self.out(out)
 
 
+WAVEUP_VARIANTS = tuple(f"waveup_{f}" for f in (
+    "haar", "haar_learn", "db2", "db2_learn", "sym4", "sym4_learn",
+    "rand_learn", "rand4_learn", "rand8_learn"))
+
+
 def build_model(
     variant: str,
     in_channels: int = 1,
@@ -164,8 +169,8 @@ def build_model(
     waveup_haar / waveup_haar_learn / waveup_rand_learn  [Experiment 5]
         All 5 decoder upsamplings use wavelet synthesis: decoder → coarse
         band, encoder features before patch merging → 7 detail bands.
-        Filters fixed Haar / trainable from Haar / trainable from random
-        (control with identical tensor flow and parameter count).
+        Filters fixed / trainable from the wavelet (haar, db2, sym4) / trainable
+        from random (rand = 2-tap control; rand4 / rand8 matched to db2 / sym4).
 
         Parameter count (embed_dim=48):
             levels=1 :  64  (SE)  + 432 (proj) =  496
@@ -199,7 +204,7 @@ def build_model(
             feature_size=feature_size, use_checkpoint=use_checkpoint, use_v2=use_v2,
         )
 
-    elif variant in ("waveup_haar", "waveup_haar_learn", "waveup_rand_learn"):
+    elif variant in WAVEUP_VARIANTS:
         return SwinUNETRWaveUp(
             filters=variant[len("waveup_"):],
             spatial_dims=3, in_channels=in_channels, out_channels=out_channels,

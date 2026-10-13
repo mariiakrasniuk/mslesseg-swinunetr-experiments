@@ -224,6 +224,30 @@ All variants have 2.7M *fewer* parameters than the baseline (the transposed conv
 - Learnable Haar filters: no gain over fixed Haar (Dice −0.002; small recall better on val only).
 - **Next:** confirmatory runs with seeds 4–6 for baseline r2, waveup_haar and the random control. The primary endpoint is fixed in advance: small-lesion recall at 7 and 8 FP/patient on test, patient-bootstrap CI.
 
+**Confirmation result (2026-10-08, seeds 4–6 + all 6 seeds, [aggregate](results/exp5c_test/aggregate.md)): the Haar-specific lead is NOT confirmed.**
+
+| Small-lesion recall, test @8 FP/pt | baseline r2 | Haar decoder | random-filter decoder |
+|---|---|---|---|
+| seeds 1–3 (original) | 0.342 | 0.383 | 0.349 |
+| **seeds 4–6 (replication)** | 0.351 | 0.353 | **0.388** |
+| all 6 seeds | 0.346 | 0.365 | 0.369 |
+
+- Replication (seeds 4–6): Haar vs baseline **+0.002** [−0.024, +0.041]. Haar vs random control **−0.035** [−0.060, −0.005]: the random control is *better* on the new seeds.
+- All 6 seeds: Haar vs baseline +0.019 [−0.017, +0.040] (P>0 = 0.82), Haar vs random control −0.003. Dice: Haar 0.690, random 0.689, baseline 0.692.
+- **Interpretation:** the +0.04 seen with seeds 1–3 was largely seed variation (regression to the mean). There is no evidence that the *wavelet structure* helps. Both decoder variants (Haar and random filters) sit about +0.02 above the baseline in small-lesion recall at matched FP over 6 seeds. If that is real, it comes from the extra encoder→decoder path, not the wavelet. Not significant.
+
+### Experiment 6 — Wavelet decoder with db2 and sym4 *(requested by supervisor, 2026-10-13)*
+
+Same decoder and protocol as Experiment 5 (recipe r2, 3 seeds), filling the table for the other wavelet families:
+
+| Variant | Filters | Note |
+|---|---|---|
+| `waveup_db2` / `waveup_db2_learn` | db2 (4-tap), fixed / trainable from db2 | |
+| `waveup_sym4` / `waveup_sym4_learn` | sym4 (8-tap), fixed / trainable from sym4 | `_learn`: +3.5M params (8³ filters) |
+| optional `waveup_rand4_learn` / `waveup_rand8_learn` | random, matched filter length | fair control for db2 / sym4 (`QUEUE=exp6ctrl`) |
+
+The decoder uses **periodic boundary handling** for db2/sym4 (PyWavelets 'periodization'). With zero padding, reconstruction lost up to 40% at feature-map borders, which is nearly all of the 6³ level, and would handicap the longer filters. With periodization, reconstruction is exact at every size (error about 1e-7). Haar is unchanged. Run: `QUEUE=exp6` (12 runs). Baseline r2, Haar and the 2-tap random control are reused from Experiment 5.
+
 ### Phase 2 — Learnable filters *(core contribution)*
 
 Make the 1D analysis filters `lo` / `hi` `nn.Parameter`s. Keep building the 3D bank as separable outer products, so the model has only a few dozen parameters per filter pair, not a free 3D kernel.

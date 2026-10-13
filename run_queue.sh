@@ -48,6 +48,16 @@ case "$QUEUE" in
         "--variant waveup_haar --recipe r2"
         "--variant waveup_rand_learn --recipe r2"
     ) ;;
+    exp6) CONFIGS=(                       # wavelet decoder with db2 / sym4 (Haar + 2-tap control = exp5)
+        "--variant waveup_db2 --recipe r2"
+        "--variant waveup_db2_learn --recipe r2"
+        "--variant waveup_sym4 --recipe r2"
+        "--variant waveup_sym4_learn --recipe r2"
+    ) ;;
+    exp6ctrl) CONFIGS=(                   # optional: random controls with matched filter length
+        "--variant waveup_rand4_learn --recipe r2"
+        "--variant waveup_rand8_learn --recipe r2"
+    ) ;;
     *) echo "unknown QUEUE=$QUEUE"; exit 1 ;;
 esac
 

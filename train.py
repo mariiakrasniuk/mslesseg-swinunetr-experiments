@@ -26,7 +26,9 @@ from splits import TRAIN_PATIENTS, VAL_PATIENTS
 parser = argparse.ArgumentParser()
 parser.add_argument("--variant", type=str, default="baseline",
                     choices=["baseline", "wavelet_a", "wavelet_ml", "detail_skip_plain", "detail_skip_haar",
-                             "waveup_haar", "waveup_haar_learn", "waveup_rand_learn"],
+                             "waveup_haar", "waveup_haar_learn", "waveup_db2", "waveup_db2_learn",
+                             "waveup_sym4", "waveup_sym4_learn", "waveup_rand_learn",
+                             "waveup_rand4_learn", "waveup_rand8_learn"],
                     help="Model variant to train")
 parser.add_argument("--wavelet", type=str, default="haar",
                     choices=["haar", "db2", "sym4"],

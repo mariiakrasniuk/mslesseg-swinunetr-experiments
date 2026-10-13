@@ -514,36 +514,68 @@ class WaveletUpsample(nn.Module):
     instead of being re-learned by a transposed convolution.
 
     filters
-        'haar'       fixed orthonormal Haar analysis/synthesis (buffers)
-        'haar_learn' trainable, initialised to Haar (supervisor's idea)
-        'rand_learn' trainable, random initialisation — control with identical
-                     tensor flow and parameter count: separates "wavelet
-                     structure" from "extra information path"
+        '<family>'        fixed orthonormal analysis/synthesis (buffers),
+                          family ∈ {haar, db2, sym4} (2-, 4-, 8-tap filters)
+        '<family>_learn'  trainable, initialised to that wavelet (supervisor's idea)
+        'rand_learn'      trainable, random 2-tap initialisation — control with
+                          identical tensor flow and parameter count as Haar:
+                          separates "wavelet structure" from "extra information path"
+        'rand<k>_learn'   random control with k-tap filters (matched to db2: k=4, sym4: k=8)
+
+    Longer filters use PERIODIC boundary handling (PyWavelets 'periodization'):
+    the analysis pads circularly by (k−2)/2, and the synthesis folds the overhang
+    back. The transform then stays orthogonal for any even size, so
+    reconstruction is exact everywhere — with zero padding db2/sym4 lose up to
+    ~40% at feature-map borders, which at the 6³ decoder level is almost
+    everything. Haar (k=2) needs no padding and is unchanged.
     """
 
     def __init__(self, dec_channels: int, enc_channels: int, filters: str = "haar"):
         super().__init__()
-        if filters not in ("haar", "haar_learn", "rand_learn"):
+        learn = filters.endswith("_learn")
+        base = filters[: -len("_learn")] if learn else filters
+        if base in _WAVELET_FILTERS:
+            bank = DWT3d(base).weight                             # [8, 1, k, k, k], orthonormal
+        elif base.startswith("rand") and learn and base[4:] in ("", "2", "4", "8"):
+            k = int(base[4:] or 2)
+            # unit expected norm per k×k×k filter, like the orthonormal wavelet filters
+            bank = torch.randn(8, 1, k, k, k) / (k ** 3) ** 0.5
+        else:
             raise ValueError(f"Unknown filters '{filters}'")
         C = enc_channels
         self.C = C
+        self.padding = (bank.shape[-1] - 2) // 2
         self.to_lll = nn.Conv3d(dec_channels, C, kernel_size=1)
-        haar = HaarDWT3d().weight.repeat(C, 1, 1, 1, 1)          # [8C, 1, 2, 2, 2], grouped per channel
-        if filters == "haar":
-            self.register_buffer("analysis", haar.clone())
-            self.register_buffer("synthesis", haar.clone())
-        elif filters == "haar_learn":
-            self.analysis = nn.Parameter(haar.clone())
-            self.synthesis = nn.Parameter(haar.clone())
+        bank = bank.repeat(C, 1, 1, 1, 1)                         # [8C, 1, k, k, k], grouped per channel
+        if not learn:
+            self.register_buffer("analysis", bank.clone())
+            self.register_buffer("synthesis", bank.clone())
+        elif base.startswith("rand"):
+            self.analysis = nn.Parameter(bank.clone())
+            self.synthesis = nn.Parameter(torch.randn_like(bank) / (bank.shape[-1] ** 3) ** 0.5)
         else:
-            # unit expected norm per 2×2×2 filter, like the orthonormal Haar filters
-            self.analysis = nn.Parameter(torch.randn_like(haar) / 8 ** 0.5)
-            self.synthesis = nn.Parameter(torch.randn_like(haar) / 8 ** 0.5)
+            self.analysis = nn.Parameter(bank.clone())
+            self.synthesis = nn.Parameter(bank.clone())
+
+    def _fold(self, y: torch.Tensor) -> torch.Tensor:
+        """Periodic transpose of the circular padding: wrap the p-voxel overhang
+        on each side of every spatial axis back onto the opposite side."""
+        p = self.padding
+        for dim in (2, 3, 4):
+            n = y.shape[dim] - 2 * p
+            core = y.narrow(dim, p, n).clone()
+            core.narrow(dim, 0, p).add_(y.narrow(dim, n + p, p))
+            core.narrow(dim, n - p, p).add_(y.narrow(dim, 0, p))
+            y = core
+        return y
 
     def forward(self, dec: torch.Tensor, enc: torch.Tensor) -> torch.Tensor:
-        B, C = dec.shape[0], self.C
+        B, C, p = dec.shape[0], self.C, self.padding
+        if p:
+            enc = F.pad(enc, (p, p, p, p, p, p), mode="circular")
         bands = F.conv3d(enc, self.analysis, stride=2, groups=C)        # [B, 8C, r/2]
         bands = bands.view(B, C, 8, *bands.shape[2:])
         lll = self.to_lll(dec).unsqueeze(2)                              # [B, C, 1, r/2]
         bands = torch.cat([lll, bands[:, :, 1:]], dim=2).flatten(1, 2)  # [B, 8C, r/2]
-        return F.conv_transpose3d(bands, self.synthesis, stride=2, groups=C)
+        out = F.conv_transpose3d(bands, self.synthesis, stride=2, groups=C)
+        return self._fold(out) if p else out
