@@ -248,6 +248,20 @@ Same decoder and protocol as Experiment 5 (recipe r2, 3 seeds), filling the tabl
 
 The decoder uses **periodic boundary handling** for db2/sym4 (PyWavelets 'periodization'). With zero padding, reconstruction lost up to 40% at feature-map borders, which is nearly all of the 6³ level, and would handicap the longer filters. With periodization, reconstruction is exact at every size (error about 1e-7). Haar is unchanged. Run: `QUEUE=exp6` (12 runs). Baseline r2, Haar and the 2-tap random control are reused from Experiment 5.
 
+### Experiments 7–8 — db2 / sym4 in every Haar experiment *(2026-10-14)*
+
+All Haar experiments are repeated with db2 and sym4 (3 seeds each):
+
+| Experiment | Haar run | db2 / sym4 runs | Queue |
+|---|---|---|---|
+| Input patch embedding | Phase 0 | Phase 0 already includes db2 L2 and sym4 L1 | – |
+| Stage-1 detail skip (recipe r1) | `detail_skip_haar` | `detail_skip_db2`, `detail_skip_sym4` | `exp7` |
+| Wavelet HF loss, recipe r2 | `baseline_r2_hf1` | `baseline_r2_hf1db2`, `baseline_r2_hf1sym4` | `exp8` |
+| Wavelet HF loss, recipe r1 + Dice-BCE | `baseline_dicebce_hf1` | `..._hf1db2`, `..._hf1sym4` | `exp8r1` (optional) |
+| Wavelet decoder (r2) | `waveup_haar(_learn)` | `waveup_db2(_learn)`, `waveup_sym4(_learn)` | `exp6` |
+
+Implementation: `SeparableDWT3d` ([wavelet.py](wavelet.py)), a separable, periodic 3-D DWT (3·k instead of k³ operations; for 8-tap sym4 24 vs 512, which made the first sym4 decoder runs about 6× slower than Haar). Verified: equal to the direct 3-D transform, exact inverse at all sizes, and **Haar unchanged** in the decoder, skip and loss (existing checkpoints load and give identical outputs). The trainable `_learn` decoders keep the per-channel 3-D parameterisation (consistent with `waveup_haar_learn`), so `waveup_sym4_learn` remains slower.
+
 ### Phase 2 — Learnable filters *(core contribution)*
 
 Make the 1D analysis filters `lo` / `hi` `nn.Parameter`s. Keep building the 3D bank as separable outer products, so the model has only a few dozen parameters per filter pair, not a free 3D kernel.

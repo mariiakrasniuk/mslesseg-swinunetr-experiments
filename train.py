@@ -26,6 +26,7 @@ from splits import TRAIN_PATIENTS, VAL_PATIENTS
 parser = argparse.ArgumentParser()
 parser.add_argument("--variant", type=str, default="baseline",
                     choices=["baseline", "wavelet_a", "wavelet_ml", "detail_skip_plain", "detail_skip_haar",
+                             "detail_skip_db2", "detail_skip_sym4",
                              "waveup_haar", "waveup_haar_learn", "waveup_db2", "waveup_db2_learn",
                              "waveup_sym4", "waveup_sym4_learn", "waveup_rand_learn",
                              "waveup_rand4_learn", "waveup_rand8_learn"],
@@ -55,6 +56,8 @@ parser.add_argument("--out_dir", type=str, default="checkpoints",
                     help="Where checkpoints, history and curves are written")
 parser.add_argument("--loss", type=str, default="dice", choices=["dice", "dicebce"],
                     help="dice: Dice loss (Phase 0 / Exp. 2); dicebce: Dice + binary cross-entropy")
+parser.add_argument("--hf_wavelet", type=str, default="haar", choices=["haar", "db2", "sym4"],
+                    help="Wavelet family used by the high-frequency loss")
 parser.add_argument("--hf_weight", type=float, default=0.0,
                     help="Weight of the wavelet high-frequency loss (0 = off)")
 parser.add_argument("--hf_levels", type=int, default=3,
@@ -101,7 +104,7 @@ if args.recipe != "r1":
 if args.loss != "dice":
     RUN_NAME += f"_{args.loss}"
 if args.hf_weight > 0:
-    RUN_NAME += f"_hf{args.hf_weight:g}"
+    RUN_NAME += f"_hf{args.hf_weight:g}" + ("" if args.hf_wavelet == "haar" else args.hf_wavelet)
 RUN_NAME += f"_s{args.seed}"
 
 # ------------------
@@ -181,7 +184,7 @@ print(f"Multimodal : {MULTIMODAL}  |  SwinV2: {USE_V2}  |  in_channels: {IN_CHAN
 print(f"Aug        : {AUG}  |  intensity_aug={INTENSITY_AUG}  coeff_aug={COEFF_AUG}")
 print(f"Run name   : {RUN_NAME}  |  seed: {args.seed}  |  epochs: {EPOCHS}  patience: {PATIENCE}")
 print(f"Recipe     : {args.recipe}  |  sampler: {SAMPLER}  |  aug: {AUG}")
-print(f"Loss       : {args.loss}" + (f" + {args.hf_weight:g} x wavelet HF ({args.hf_levels} levels)"
+print(f"Loss       : {args.loss}" + (f" + {args.hf_weight:g} x wavelet HF ({args.hf_wavelet}, {args.hf_levels} levels)"
                                      if args.hf_weight > 0 else ""))
 print(f"Best model will be saved to: {BEST_MODEL_PATH}")
 
@@ -209,7 +212,8 @@ model = build_model(VARIANT, in_channels=IN_CHANNELS, use_checkpoint=True,
 # Loss / Optim / Metrics
 # ------------------
 _seg_loss = DiceLoss(sigmoid=True) if args.loss == "dice" else DiceCELoss(sigmoid=True)
-_hf_loss = WaveletHFLoss(levels=args.hf_levels).to(DEVICE) if args.hf_weight > 0 else None
+_hf_loss = (WaveletHFLoss(levels=args.hf_levels, wavelet=args.hf_wavelet).to(DEVICE)
+            if args.hf_weight > 0 else None)
 
 
 def loss_fn(logits, y):

@@ -17,8 +17,10 @@ cd "$(dirname "$0")"
 mkdir -p logs
 
 SEEDS="${SEEDS:-1 2 3}"
-QUEUE="${QUEUE:-phase0}"
-case "$QUEUE" in
+QUEUE="${QUEUE:-phase0}"            # one or several queue names, e.g. QUEUE="exp6 exp7 exp8"
+ALL_CONFIGS=()
+for q in $QUEUE; do
+case "$q" in
     phase0) CONFIGS=(
         "--variant baseline"
         "--variant wavelet_ml --wavelet sym4 --levels 1"
@@ -58,12 +60,27 @@ case "$QUEUE" in
         "--variant waveup_rand4_learn --recipe r2"
         "--variant waveup_rand8_learn --recipe r2"
     ) ;;
-    *) echo "unknown QUEUE=$QUEUE"; exit 1 ;;
+    exp7) CONFIGS=(                       # Exp. 2 with db2 / sym4 (recipe r1, like Exp. 2)
+        "--variant detail_skip_db2"
+        "--variant detail_skip_sym4"
+    ) ;;
+    exp8) CONFIGS=(                       # wavelet HF loss with db2 / sym4, recipe r2 (Stage 3 table)
+        "--variant baseline --recipe r2 --hf_weight 1 --hf_wavelet db2"
+        "--variant baseline --recipe r2 --hf_weight 1 --hf_wavelet sym4"
+    ) ;;
+    exp8r1) CONFIGS=(                     # wavelet HF loss with db2 / sym4, recipe r1 (Exp. 3 / Stage 2 table)
+        "--variant baseline --loss dicebce --hf_weight 1 --hf_wavelet db2"
+        "--variant baseline --loss dicebce --hf_weight 1 --hf_wavelet sym4"
+    ) ;;
+    *) echo "unknown QUEUE=$q"; exit 1 ;;
 esac
+ALL_CONFIGS+=("${CONFIGS[@]}")
+done
+CONFIGS=("${ALL_CONFIGS[@]}")
 
 for seed in $SEEDS; do
     for cfg in "${CONFIGS[@]}"; do
-        tag="$(echo "$cfg" | sed -e 's/--variant //' -e 's/ --wavelet /_/' -e 's/ --levels /_l/'                                  -e 's/ --recipe /_/' -e 's/ --loss /_/' -e 's/ --hf_weight /_hf/')_s${seed}"
+        tag="$(echo "$cfg" | sed -e 's/--variant //' -e 's/ --wavelet /_/' -e 's/ --levels /_l/'                                  -e 's/ --recipe /_/' -e 's/ --loss /_/' -e 's/ --hf_weight /_hf/' -e 's/ --hf_wavelet //')_s${seed}"
         echo "[$(date '+%F %T')] START $tag"
         if python train.py $cfg --seed "$seed" >> "logs/train_${tag}.log" 2>&1; then
             echo "[$(date '+%F %T')] DONE  $tag  ($(grep -h 'best val Dice\|skipping' "logs/train_${tag}.log" | tail -1))"

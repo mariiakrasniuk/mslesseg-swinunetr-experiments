@@ -148,6 +148,76 @@ class DWT3d(nn.Module):
         return F.conv3d(x, self.weight, stride=2, padding=self.padding)
 
 
+class SeparableDWT3d(nn.Module):
+    """
+    Single-level 3-D DWT computed SEPARABLY (one 1-D filter pass per axis) with
+    periodic boundaries (PyWavelets 'periodization').
+
+    Same filters and sub-band order (LLL, LLH, ..., HHH) as DWT3d, but a k-tap
+    wavelet costs 3·k multiply-adds per output instead of k³ (8-tap sym4: 24 vs
+    512), and the transform is exactly orthogonal at any even size, so
+    `inverse` reconstructs perfectly, borders included. For Haar (k = 2, no
+    padding) it equals HaarDWT3d / HaarIDWT3d exactly.
+
+    forward : [N, C, D, H, W] -> [N, 8C, D/2, H/2, W/2]  (8 bands grouped per channel)
+    inverse : [N, 8C, D/2, H/2, W/2] -> [N, C, D, H, W]
+    """
+
+    def __init__(self, wavelet: str = "haar"):
+        super().__init__()
+        lo, hi = _WAVELET_FILTERS[wavelet]
+        # constant filters: not saved in checkpoints (keeps older checkpoints loadable)
+        self.register_buffer("filt", torch.tensor([lo, hi], dtype=torch.float32), persistent=False)
+        self.k = len(lo)
+        self.p = (self.k - 2) // 2
+
+    def _weight(self, dim: int) -> torch.Tensor:
+        shape = [1, 1, 1]
+        shape[dim - 2] = self.k
+        return self.filt.reshape(2, 1, *shape)
+
+    def _stride(self, dim: int):
+        stride = [1, 1, 1]
+        stride[dim - 2] = 2
+        return stride
+
+    def _analyse(self, x: torch.Tensor, dim: int) -> torch.Tensor:
+        """[M, 1, ...] -> [M, 2, ...] (L, H), halved along `dim`."""
+        if self.p:
+            pad = [0] * 6
+            pad[(4 - dim) * 2] = pad[(4 - dim) * 2 + 1] = self.p
+            x = F.pad(x, pad, mode="circular")
+        return F.conv3d(x, self._weight(dim), stride=self._stride(dim))
+
+    def _synthesise(self, y: torch.Tensor, dim: int) -> torch.Tensor:
+        """[M, 2, ...] -> [M, 1, ...], doubled along `dim` (periodic transpose)."""
+        x = F.conv_transpose3d(y, self._weight(dim), stride=self._stride(dim))
+        p = self.p
+        if p:
+            n = x.shape[dim] - 2 * p
+            core = x.narrow(dim, p, n).clone()
+            core.narrow(dim, 0, p).add_(x.narrow(dim, n + p, p))
+            core.narrow(dim, n - p, p).add_(x.narrow(dim, 0, p))
+            x = core
+        return x
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        N, C = x.shape[:2]
+        y = x.reshape(N * C, 1, *x.shape[2:])
+        for dim in (2, 3, 4):                                   # D, H, W -> band = 4d + 2h + w
+            y = self._analyse(y.reshape(-1, 1, *y.shape[2:]), dim)
+        return y.reshape(N, C * 8, *y.shape[2:])
+
+    def inverse(self, bands: torch.Tensor, channels: int) -> torch.Tensor:
+        N = bands.shape[0]
+        y = bands.reshape(N * channels * 4, 2, *bands.shape[2:])
+        for i, dim in enumerate((4, 3, 2)):                     # undo W, then H, then D
+            y = self._synthesise(y, dim)
+            if i < 2:
+                y = y.reshape(-1, 2, *y.shape[2:])
+        return y.reshape(N, channels, *y.shape[2:])
+
+
 class SubBandSE(nn.Module):
     """
     Squeeze-and-Excitation over the 8 DWT sub-band channels.
@@ -430,12 +500,14 @@ class WaveletDetailSkip(nn.Module):
     def __init__(self, channels: int, mode: str = "haar_hf"):
         super().__init__()
         from monai.networks.blocks import UnetrBasicBlock
-        if mode not in ("plain", "haar_hf"):
+        if mode not in ("plain", "haar_hf", "db2_hf", "sym4_hf"):
             raise ValueError(f"Unknown detail skip mode '{mode}'")
         self.mode = mode
         if mode == "haar_hf":
             self.dwt  = HaarDWT3d()
             self.idwt = HaarIDWT3d()
+        elif mode != "plain":
+            self.sep = SeparableDWT3d(mode[: -len("_hf")])        # db2 / sym4, periodic
         self.block = UnetrBasicBlock(spatial_dims=3, in_channels=channels, out_channels=channels,
                                      kernel_size=3, stride=1, norm_name="instance", res_block=True)
         self.out = nn.Conv3d(channels, channels, kernel_size=1)
@@ -448,9 +520,17 @@ class WaveletDetailSkip(nn.Module):
         bands = torch.cat([torch.zeros_like(bands[:, :1]), bands[:, 1:]], dim=1)  # drop LLL
         return self.idwt(bands).reshape(B, C, D, H, W)
 
+    def high_pass_sep(self, x: torch.Tensor) -> torch.Tensor:
+        B, C = x.shape[:2]
+        bands = self.sep(x).view(B, C, 8, *[d // 2 for d in x.shape[2:]]).clone()
+        bands[:, :, 0] = 0                                         # drop LLL
+        return self.sep.inverse(bands.flatten(1, 2), C)
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         if self.mode == "haar_hf":
             x = self.high_pass(x)
+        elif self.mode != "plain":
+            x = self.high_pass_sep(x)
         return self.out(self.block(x))
 
 
@@ -474,17 +554,20 @@ class WaveletHFLoss(nn.Module):
     Input: logits [B, 1, D, H, W] (sigmoid applied here), target [B, 1, D, H, W]
     """
 
-    def __init__(self, levels: int = 3, smooth: float = 1.0):
+    def __init__(self, levels: int = 3, smooth: float = 1.0, wavelet: str = "haar"):
         super().__init__()
         self.levels = levels
         self.smooth = smooth
-        self.dwt = HaarDWT3d()
+        # Haar keeps the original (Exp. 3/4) implementation; db2/sym4 use the
+        # separable periodic transform
+        self.dwt = HaarDWT3d() if wavelet == "haar" else SeparableDWT3d(wavelet)
+        self.min_size = 2 if wavelet == "haar" else len(_WAVELET_FILTERS[wavelet][0])
 
     def forward(self, logits: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
         p, y = torch.sigmoid(logits), target.float()
         diff = norm = 0.0
         for _ in range(self.levels):
-            if min(p.shape[2:]) < 2:
+            if min(p.shape[2:]) < self.min_size:
                 break
             bp, by = self.dwt(p), self.dwt(y)
             hp, hy = bp[:, 1:], by[:, 1:]                 # 7 detail bands
@@ -547,7 +630,10 @@ class WaveletUpsample(nn.Module):
         self.padding = (bank.shape[-1] - 2) // 2
         self.to_lll = nn.Conv3d(dec_channels, C, kernel_size=1)
         bank = bank.repeat(C, 1, 1, 1, 1)                         # [8C, 1, k, k, k], grouped per channel
+        self.sep = SeparableDWT3d(base) if not learn else None
         if not learn:
+            # kept for checkpoint compatibility; the fixed path uses self.sep
+            # (identical filters, separable, periodic — exact and ~k²/3× cheaper)
             self.register_buffer("analysis", bank.clone())
             self.register_buffer("synthesis", bank.clone())
         elif base.startswith("rand"):
@@ -570,6 +656,11 @@ class WaveletUpsample(nn.Module):
         return y
 
     def forward(self, dec: torch.Tensor, enc: torch.Tensor) -> torch.Tensor:
+        if self.sep is not None:                                     # fixed wavelet
+            B, C = dec.shape[0], self.C
+            bands = self.sep(enc).view(B, C, 8, *dec.shape[2:])
+            bands = torch.cat([self.to_lll(dec).unsqueeze(2), bands[:, :, 1:]], dim=2)
+            return self.sep.inverse(bands.flatten(1, 2), C)
         B, C, p = dec.shape[0], self.C, self.padding
         if p:
             enc = F.pad(enc, (p, p, p, p, p, p), mode="circular")

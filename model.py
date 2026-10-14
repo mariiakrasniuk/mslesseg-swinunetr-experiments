@@ -197,9 +197,9 @@ def build_model(
         )
         return model
 
-    elif variant in ("detail_skip_plain", "detail_skip_haar"):
+    elif variant in ("detail_skip_plain", "detail_skip_haar", "detail_skip_db2", "detail_skip_sym4"):
         return SwinUNETRDetailSkip(
-            detail_mode="plain" if variant == "detail_skip_plain" else "haar_hf",
+            detail_mode="plain" if variant == "detail_skip_plain" else variant[len("detail_skip_"):] + "_hf",
             spatial_dims=3, in_channels=in_channels, out_channels=out_channels,
             feature_size=feature_size, use_checkpoint=use_checkpoint, use_v2=use_v2,
         )
